@@ -48,23 +48,49 @@ provider explicitly documents such a model alias.
 - API-key-authenticated hosts are allowed to show Fast service-tier controls.
   The current upstream access object keeps synthetic Ultrafast access disabled;
   ChatGPT, personal-access-token, and Amazon Bedrock hosts retain their upstream
-  speed-mode requirements and pending state.
+  speed-mode requirements and pending state. Loaded API-key hosts receive Fast
+  access only after host loading completes; changing the authentication method
+  invalidates the access memo even between two non-account identities.
+- The model catalog recomputes its API-key marker from that catalog's auth
+  input on every normalization. Identity switches replace any stale marker;
+  provider model fields, `serviceTiers`, and upstream reasoning-effort filtering
+  remain intact.
 - If an API-key host's active model has no `serviceTiers` metadata, the UI
   synthesizes one `fast` option so the selector can send
   `serviceTier: "fast"`.
 - ChatGPT-, personal-access-token-, and Amazon Bedrock-authenticated hosts still
   use upstream account requirements for official Fast mode and do not receive
-  synthetic API-key service-tier access or metadata.
+  synthetic API-key service-tier access or tiers.
 
 ## Implementation
 
 The rspack webview has no stable chunk names, so each patch finds its owner by
-content: the speed-mode access hook (copied into every chunk that renders a
-speed control; every copy is patched), the model catalog filter that marks
+content: the published speed-mode access hook (copied into every chunk that
+renders a speed control), the model catalog filter that marks
 API-key models, the service-tier resolver, and the active-model speed option
 list. The synthetic Fast helper is declared inside the same webpack module as
-each function that calls it. A missing or drifted owner leaves its chunk
-unchanged and reports a warning.
+each function that calls it. The gate validates its factory imports, host/auth
+query, native entitlement resolver and memoized outputs before preparing every
+physical copy of its module. The model marker validates the published catalog's
+auth input, loop model, normalized output, and returned catalog through the shared
+owner inspector. Only its exact output-field insertion qualifies as applied;
+marker text in comments, strings, other objects, or another auth binding refuses
+the patch. The catalog marker census permits the two Fast helpers to read that
+field only when their whole resolver or options factory is exactly canonical;
+arbitrary property reads and opaque examples still refuse the catalog cohort. All four patches prepare every physical copy before
+writes. All copies must be pristine or exactly patched; a missing, ambiguous,
+drifted, orphan, or partially patched owner refuses that patch's whole cohort.
+A later write failure restores every attempted file, including a partially
+written file. The resolver qualifies the complete published factory, including its provider-tier
+lookup, request-id conversion, classification, access checks and exported callers.
+It accepts only the exact local Fast helper and fallback insertion as applied.
+The option-list patch qualifies its complete published factory, including
+localized Standard/Fast/Ultrafast options, provider-tier mapping and the active-model
+wrapper. Its imported classifier and reexports must bind the actual qualified
+service-tier resolver. Existing provider tiers take precedence; synthetic Fast is
+available only for a strictly marked API-key model without advertised tiers.
+Only the exact wrapper helper and argument insertion qualify as applied. The
+enabled-feature build gate rejects a skipped or failed required descriptor.
 
 ## Risks
 
@@ -75,5 +101,5 @@ ignores unknown fields may show the UI without changing latency.
 ## Test
 
 ```bash
-node --test linux-features/api-key-service-tier/test.js
+node --test linux-features/api-key-service-tier/test.js linux-features/api-key-service-tier/resolver.test.js linux-features/api-key-service-tier/options.test.js
 ```

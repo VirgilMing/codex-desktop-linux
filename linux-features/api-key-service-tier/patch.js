@@ -1,5 +1,14 @@
 "use strict";
 
+const path = require("node:path");
+const { Script } = require("node:vm");
+const { createJavaScriptLexicalIndex } = require("../../scripts/patches/lib/minified-js.js");
+const { findRspackExportPublication } = require("../../scripts/patches/lib/rspack-export-publication.js");
+const { findRspackRequireBinding, findUniqueRspackModuleCopies, patchRspackModuleCopies } =
+  require("../../scripts/patches/lib/rspack-module-assets.js");
+const { rspackModuleFactories } = require("../../scripts/patches/lib/rspack-module-assets.js");
+const { inspectModelCatalogOwner } = require("../../scripts/patches/lib/model-composer-owners.js");
+
 const JS_IDENT = "[A-Za-z_$][\\w$]*";
 const PATCH_MARKER = "codexLinuxApiKeyFastTier";
 const MODEL_MARKER = "codexLinuxApiKeyServiceTierModel";
@@ -7,7 +16,7 @@ const API_KEY_ACCESS = "{fast:!0,ultrafast:!1}";
 
 // rspack chunks have no stable filenames, so every owner is found by content.
 // The speed-mode access hook is copied into every chunk that renders a speed
-// control; each copy is patched independently.
+// control; prepare every physical copy before committing the cohort.
 const GATE_NEEDLES = ["serviceTierAccess:", 'authMethod==="personalAccessToken"'];
 const MODEL_NEEDLES = [
   "hasModelSupportingUltraReasoningEffort",
@@ -41,102 +50,235 @@ function spliceMatch(source, match, replacement) {
 
 // --- Speed-mode access gate -------------------------------------------------
 
+// This contract describes the complete current published hook, not text that
+// merely resembles its entitlement branch. In particular the hostId, auth
+// query, loading state, native resolver and both memoized outputs share the
+// captured bindings. Import/export names and physical chunk names may drift.
 function serviceTierGatePattern(patched = false) {
-  const access = patched
-    ? `"apikey"===\\k<auth>&&!\\k<loading>\\?\\{fast:!0,ultrafast:!1\\}:null`
-    : "null";
   const cacheAuth = patched ? "\\k<auth>" : "\\k<account>";
+  const access = patched ? `"apikey"===\\k<auth>&&!\\k<loading>\\?\\{fast:!0,ultrafast:!1\\}:null` : "null";
   return new RegExp(
-    `(?<account>${JS_IDENT})=(?<host>${JS_IDENT})\\?\\.authMethod==="chatgpt"` +
-      `\\|\\|\\k<host>\\?\\.authMethod==="personalAccessToken"` +
-      `\\|\\|\\k<host>\\?\\.authMethod==="amazonBedrock",` +
-      `(?<auth>${JS_IDENT})=\\k<host>\\?\\.authMethod\\?\\?null;[\\s\\S]{0,500}?` +
-      `(?<loading>${JS_IDENT})=!!\\k<host>\\?\\.isLoading\\|\\|\\k<account>&&${JS_IDENT};` +
-      `(?<cache>${JS_IDENT})\\[3\\]!==(?<requirements>${JS_IDENT})\\|\\|\\k<cache>\\[4\\]!==\\k<loading>` +
-      `\\|\\|\\k<cache>\\[5\\]!==${cacheAuth}\\?` +
-      `\\((?<result>${JS_IDENT})=\\k<account>&&!\\k<loading>&&null!=\\k<requirements>` +
-      `\\?(?<resolver>\\(0,${JS_IDENT}\\.${JS_IDENT}\\)|${JS_IDENT})\\(\\k<requirements>\\):${access},` +
-      `\\k<cache>\\[3\\]=\\k<requirements>,\\k<cache>\\[4\\]=\\k<loading>,\\k<cache>\\[5\\]=${cacheAuth},` +
-      `\\k<cache>\\[6\\]=\\k<result>\\):\\k<result>=\\k<cache>\\[6\\];` +
-      `let (?<output>${JS_IDENT})=\\k<result>(?:,${JS_IDENT})*;return[\\s\\S]{0,160}?` +
-      `serviceTierAccess:\\k<output>,isLoading:\\k<loading>\\}`,
-    "g",
+    `^function\\((?<argument>${JS_IDENT})\\)\\{let (?<query>${JS_IDENT}),(?<result>${JS_IDENT}),` +
+    `(?<returned>${JS_IDENT}),(?<cache>${JS_IDENT})=\\(0,(?<memoModule>${JS_IDENT})\\.${JS_IDENT}\\)\\(10\\),` +
+    `(?<defaultHost>${JS_IDENT})=\\(0,(?<queryModule>${JS_IDENT})\\.${JS_IDENT}\\)` +
+    `\\((?<defaultModule>${JS_IDENT})\\.${JS_IDENT}\\),(?<hostId>${JS_IDENT})=\\k<argument>\\?\\.hostId\\?\\?\\k<defaultHost>,` +
+    `(?<host>${JS_IDENT})=\\(0,(?<hostModule>${JS_IDENT})\\.${JS_IDENT}\\)\\(\\k<hostId>\\),` +
+    `(?<account>${JS_IDENT})=\\k<host>\\?\\.authMethod==="chatgpt"` +
+    `\\|\\|\\k<host>\\?\\.authMethod==="personalAccessToken"` +
+    `\\|\\|\\k<host>\\?\\.authMethod==="amazonBedrock",(?<auth>${JS_IDENT})=\\k<host>\\?\\.authMethod\\?\\?null;` +
+    `\\k<cache>\\[0\\]!==\\k<hostId>\\|\\|\\k<cache>\\[1\\]!==\\k<auth>\\?` +
+    `\\(\\k<query>=\\{authMethod:\\k<auth>,hostId:\\k<hostId>\\},\\k<cache>\\[0\\]=\\k<hostId>,` +
+    `\\k<cache>\\[1\\]=\\k<auth>,\\k<cache>\\[2\\]=\\k<query>\\):\\k<query>=\\k<cache>\\[2\\];` +
+    `let\\{data:(?<requirements>${JS_IDENT}),isPending:(?<pending>${JS_IDENT})\\}=` +
+    `\\(0,\\k<queryModule>\\.${JS_IDENT}\\)\\((?<requirementsModule>${JS_IDENT})\\.${JS_IDENT},\\k<query>\\),` +
+    `(?<loading>${JS_IDENT})=!!\\k<host>\\?\\.isLoading\\|\\|\\k<account>&&\\k<pending>;` +
+    `\\k<cache>\\[3\\]!==\\k<requirements>\\|\\|\\k<cache>\\[4\\]!==\\k<loading>\\|\\|\\k<cache>\\[5\\]!==${cacheAuth}\\?` +
+    `\\(\\k<result>=\\k<account>&&!\\k<loading>&&null!=\\k<requirements>\\?` +
+    `(?<resolver>\\(0,(?<resolverModule>${JS_IDENT})\\.${JS_IDENT}\\))\\(\\k<requirements>\\):${access},` +
+    `\\k<cache>\\[3\\]=\\k<requirements>,\\k<cache>\\[4\\]=\\k<loading>,\\k<cache>\\[5\\]=${cacheAuth},` +
+    `\\k<cache>\\[6\\]=\\k<result>\\):\\k<result>=\\k<cache>\\[6\\];` +
+    `let (?<output>${JS_IDENT})=\\k<result>;return \\k<cache>\\[7\\]!==\\k<loading>\\|\\|\\k<cache>\\[8\\]!==\\k<output>\\?` +
+    `\\(\\k<returned>=\\{serviceTierAccess:\\k<output>,isLoading:\\k<loading>\\},\\k<cache>\\[7\\]=\\k<loading>,` +
+    `\\k<cache>\\[8\\]=\\k<output>,\\k<cache>\\[9\\]=\\k<returned>\\):\\k<returned>=\\k<cache>\\[9\\],\\k<returned>\\}$`, "u",
   );
 }
 
-function serviceTierGateState(source) {
-  const current = [...source.matchAll(serviceTierGatePattern())];
-  const patched = [...source.matchAll(serviceTierGatePattern(true))];
-  if (current.length === 1 && patched.length === 0) return { kind: "current", match: current[0] };
-  if (current.length === 0 && patched.length === 1) return { kind: "patched", match: patched[0] };
-  return { kind: current.length + patched.length === 0 ? "missing" : "invalid" };
-}
-
-function applyApiKeyServiceTierGatePatch(source) {
-  const state = serviceTierGateState(source);
-  if (state.kind === "patched") return source;
-  if (state.kind === "current") {
-    const { account, auth, loading, result, cache, requirements, resolver } = state.match.groups;
-    // Keep account entitlements intact. The memo is keyed by the auth method
-    // instead of the account boolean: API-key and other non-account hosts
-    // share the same false account-auth value.
-    let replacement = replaceOnce(
-      state.match[0],
-      `${result}=${account}&&!${loading}&&null!=${requirements}?${resolver}(${requirements}):null,`,
-      `${result}=${account}&&!${loading}&&null!=${requirements}?${resolver}(${requirements}):` +
-        `"apikey"===${auth}&&!${loading}?${API_KEY_ACCESS}:null,`,
-    );
-    replacement = replacement && replaceOnce(replacement, `${cache}[5]!==${account}?`, `${cache}[5]!==${auth}?`);
-    replacement = replacement && replaceOnce(replacement, `,${cache}[5]=${account},`, `,${cache}[5]=${auth},`);
-    if (replacement != null) {
-      const patched = spliceMatch(source, state.match, replacement);
-      if (serviceTierGateState(patched).kind === "patched") return patched;
-    }
+function gateOwner(source, module, patched) {
+  if (module == null || !Array.isArray(module.params) || module.params.length !== 3 ||
+      !GATE_NEEDLES.every(needle => source.includes(needle))) return null;
+  if (typeof module.source === "string" &&
+      !createJavaScriptLexicalIndex(module.source).isCode(module.start)) return null;
+  const snapshot = { ...module, moduleSource: source };
+  const lexical = createJavaScriptLexicalIndex(source);
+  const keys = [...source.matchAll(new RegExp(`(?<key>${JS_IDENT}):function\\(`, "gu"))]
+    .filter(match => lexical.isCode(match.index)).map(match => match.groups.key);
+  const owners = [];
+  for (const key of new Set(keys)) {
+    const publication = findRspackExportPublication(snapshot, key);
+    if (publication?.fn == null) continue;
+    const { start, end } = publication.fn;
+    const match = serviceTierGatePattern(patched).exec(source.slice(start, end));
+    if (match == null) continue;
+    const groups = match.groups;
+    const imports = [groups.memoModule, groups.queryModule, groups.defaultModule,
+      groups.hostModule, groups.requirementsModule, groups.resolverModule];
+    const locals = [groups.argument, groups.query, groups.result, groups.returned, groups.cache,
+      groups.defaultHost, groups.hostId, groups.host, groups.account, groups.auth,
+      groups.requirements, groups.pending, groups.loading, groups.output];
+    if (new Set(imports).size !== imports.length || new Set(locals).size !== locals.length ||
+        locals.some(name => imports.includes(name)) || imports.some(name => module.params.includes(name))) continue;
+    const bindings = imports.map(name => findRspackRequireBinding(snapshot, name));
+    if (bindings.some(binding => binding == null)) continue;
+    // The current owner contains only static imports and this direct anonymous
+    // publication. No earlier/later reassignment, shadow scope or extra export
+    // may borrow the otherwise matching branch.
+    const req = escapeRegExp(publication.requireName), exp = escapeRegExp(publication.exportsName);
+    const imported = `${JS_IDENT}=${req}\\((?:"(?:\\\\.|[^"\\\\])*"|\\d+)\\)`;
+    const prefix = new RegExp(`^var ${imported}(?:,${imported}){5};${req}\\.d\\(${exp},\\{\\},\\{${escapeRegExp(key)}:$`, "u");
+    if (!prefix.test(source.slice(0, start)) || !/^\}\);?$/u.test(source.slice(end))) continue;
+    owners.push({ match: { ...match, index: start }, publication, imports: bindings });
   }
-  warn(
-    state.kind === "invalid"
-      ? "Service tier auth gate is ambiguous or partially patched"
-      : "Could not find service tier auth gate",
-    "API key service tier gate patch",
-  );
-  return source;
+  return owners.length === 1 ? owners[0] : null;
+}
+
+function rewriteGate(source, owner, reverse = false) {
+  const { account, auth, loading, result, cache, requirements, resolver } = owner.match.groups;
+  const nativeAccess = `${result}=${account}&&!${loading}&&null!=${requirements}?${resolver}(${requirements}):null,`;
+  const apiKeyAccess = `${result}=${account}&&!${loading}&&null!=${requirements}?${resolver}(${requirements}):` +
+    `"apikey"===${auth}&&!${loading}?${API_KEY_ACCESS}:null,`;
+  let replacement = replaceOnce(owner.match[0], reverse ? apiKeyAccess : nativeAccess, reverse ? nativeAccess : apiKeyAccess);
+  replacement = replacement && replaceOnce(replacement, `${cache}[5]!==${reverse ? auth : account}?`, `${cache}[5]!==${reverse ? account : auth}?`);
+  replacement = replacement && replaceOnce(replacement, `,${cache}[5]=${reverse ? auth : account},`, `,${cache}[5]=${reverse ? account : auth},`);
+  return replacement == null ? null : spliceMatch(source, owner.match, replacement);
+}
+
+function serviceTierGateState(source, module) {
+  const current = gateOwner(source, module, false), patched = gateOwner(source, module, true);
+  if (current != null && patched == null) return { kind: "current", ...current };
+  if (current == null && patched != null) {
+    const native = rewriteGate(source, patched, true), owner = gateOwner(native, module, false);
+    if (owner != null && rewriteGate(native, owner) === source) return { kind: "patched", ...patched };
+  }
+  return { kind: "missing" };
+}
+
+function applyApiKeyServiceTierGatePatch(source, module) {
+  const state = serviceTierGateState(source, module);
+  if (state.kind === "patched") return source;
+  if (state.kind !== "current") throw new Error("Missing, ambiguous or partial current API key service tier gate owner");
+  const patched = rewriteGate(source, state);
+  if (patched == null || serviceTierGateState(patched, module).kind !== "patched") {
+    throw new Error("API key service tier gate patch failed canonical replay");
+  }
+  return patched;
+}
+
+function patchApiKeyServiceTierGate(extractedDir, options = {}) {
+  const assetsDir = path.join(extractedDir, "webview", "assets");
+  const copies = findUniqueRspackModuleCopies(assetsDir, {
+    description: "current API key service tier gate bundle",
+    sourceMatch: source => GATE_NEEDLES.every(needle => source.includes(needle)),
+    matchModule: (source, module) => serviceTierGateState(source, module).kind !== "missing",
+  });
+  return patchRspackModuleCopies(assetsDir, copies, applyApiKeyServiceTierGatePatch, options);
 }
 
 // --- Model catalog marker ----------------------------------------------------
 
-const PATCHED_MODEL_MARKER = new RegExp(`${MODEL_MARKER}:"apikey"===${JS_IDENT}\\}`);
+const MODEL_DESCRIPTION = "current API key service tier model bundle";
+const modelMarkerCount = source => source.split(MODEL_MARKER).length - 1;
+const identifiesModelOwner = source => source.includes(MODEL_MARKER) || MODEL_NEEDLES.every(needle => source.includes(needle));
 
-function modelListPattern() {
-  return new RegExp(
-    `(function(?: ${JS_IDENT})?\\(\\{additionalAvailableModels:${JS_IDENT},apiKeyDaybreakSupported:${JS_IDENT}=!1,` +
-      `authMethod:(${JS_IDENT}),availableModels:${JS_IDENT},defaultModel:${JS_IDENT},` +
-      `enabledReasoningEfforts:${JS_IDENT},hasConfiguredModelCatalog:${JS_IDENT},` +
-      `includeUltraReasoningEffort:${JS_IDENT},isCustomModelProvider:${JS_IDENT}=!1,` +
-      `models:${JS_IDENT},useHiddenModels:${JS_IDENT}\\}\\)` +
-      `\\{[\\s\\S]{0,2400}?[,;]${JS_IDENT}=\\{\\.\\.\\.${JS_IDENT},supportedReasoningEfforts:${JS_IDENT})(\\})` +
-      `(?=[\\s\\S]{0,1200}?hasModelSupportingUltraReasoningEffort)`,
-    "g",
-  );
+// The generic registry walker is textual. Qualify its header as actual root
+// code before allowing it to inspect factories in comments or example strings.
+function requireModelRegistry(source) {
+  const headers = [...source.matchAll(/\bexport\s+const\s+__webpack_modules__\s*=\s*\{/gu)];
+  if (headers.length !== 1) throw new Error(`Missing or ambiguous ${MODEL_DESCRIPTION} registry`);
+  const [header] = headers;
+  const prefix = createJavaScriptLexicalIndex(source.slice(0, header.index + header[0].length));
+  if (!prefix.isRoot(header.index)) throw new Error(`Opaque or nested ${MODEL_DESCRIPTION} registry`);
 }
 
-function applyApiKeyModelMarkerPatch(source) {
-  if (PATCHED_MODEL_MARKER.test(source)) {
+function inspectModelMarker(source, snapshot) {
+  const module = { ...snapshot, moduleSource: source };
+  const found = inspectModelCatalogOwner(module);
+  if (!found.ok) throw new Error(`Unsupported ${MODEL_DESCRIPTION}: ${found.reason}`);
+  const { normalization, inputs, loop, visibility } = found;
+  const lexical = createJavaScriptLexicalIndex(source);
+  const captured = ["additional", "daybreak", "auth", "available", "configured", "custom", "hidden", "ultra", "enabled"];
+  if (captured.some(role => inputs[role] === loop.model) || visibility.owner.start !== loop.range.end ||
+      source.slice(visibility.call.end, normalization.sourceRange.start) !== "){let " ||
+      lexical.matchingBrace(visibility.call.end + 1) !== normalization.outputRange.end) {
+    throw new Error(`Unsupported ${MODEL_DESCRIPTION} normalization binding`);
+  }
+  // The captured auth must resolve to the catalog parameter at the insertion.
+  // Syntax-only probes catch lexical/destructured/function declarations and
+  // hoisted vars without executing the factory or rejecting unrelated locals
+  // inside sibling functions. These are the three scopes enclosing the field.
+  const loopOpen = loop.range.end - "{if(".length;
+  const scopes = [found.owner.body,
+    {start: loopOpen + 1, end: lexical.matchingBrace(loopOpen)},
+    {start: visibility.call.end + 2, end: normalization.outputRange.end}];
+  for (const scope of scopes) {
+    try { new Script(`function modelMarkerScope(){${source.slice(scope.start, scope.end)};let ${inputs.auth};}`); }
+    catch { throw new Error(`Unsupported ${MODEL_DESCRIPTION} auth scope binding`); }
+  }
+  const output = source.slice(normalization.outputRange.start, normalization.outputRange.end);
+  const prefix = `${normalization.output}={...${loop.model},supportedReasoningEfforts:${normalization.filteredEfforts}`;
+  const close = output.indexOf("};");
+  if (!output.startsWith(prefix) || close < prefix.length) throw new Error(`Unsupported ${MODEL_DESCRIPTION} output`);
+  const contribution = `,${MODEL_MARKER}:"apikey"===${inputs.auth}`;
+  const applied = output.slice(0, close).endsWith(contribution) && modelMarkerCount(source) === 1;
+  if (!applied && modelMarkerCount(source) !== 0) throw new Error(`Orphan or noncanonical ${MODEL_DESCRIPTION} marker`);
+  return { applied, insertion: normalization.outputRange.start + close, contribution };
+}
+
+function patchModelFactory(source, snapshot) {
+  const state = inspectModelMarker(source, snapshot);
+  if (state.applied) {
+    const start = state.insertion - state.contribution.length;
+    const native = source.slice(0, start) + source.slice(state.insertion);
+    const original = inspectModelMarker(native, snapshot);
+    if (original.applied || native.slice(0, original.insertion) + original.contribution + native.slice(original.insertion) !== source) {
+      throw new Error(`Noncanonical ${MODEL_DESCRIPTION} replay`);
+    }
     return source;
   }
-  const matches = [...source.matchAll(modelListPattern())];
-  if (matches.length === 1) {
-    const [, prefix, authMethodVar, suffix] = matches[0];
-    return spliceMatch(
-      source,
-      matches[0],
-      `${prefix},${MODEL_MARKER}:"apikey"===${authMethodVar}${suffix}`,
-    );
+  const patched = source.slice(0, state.insertion) + state.contribution + source.slice(state.insertion);
+  if (!inspectModelMarker(patched, snapshot).applied || patchModelFactory(patched, snapshot) !== patched) {
+    throw new Error(`Incomplete ${MODEL_DESCRIPTION} insertion`);
   }
-  warn(
-    matches.length > 1 ? "Model list mapping is ambiguous" : "Could not find model list mapping",
-    "API key model service tier marker patch",
-  );
-  return source;
+  return patched;
+}
+
+function applyApiKeyModelMarkerPatch(source, context = {}) {
+  if (context.factorySnapshot != null) {
+    if (context.factorySnapshot.moduleSource !== source) throw new Error("Stale model catalog factory snapshot");
+    return patchModelFactory(source, context.factorySnapshot);
+  }
+  requireModelRegistry(source);
+  const candidates = [...rspackModuleFactories(source, "model-catalog.js")]
+    .filter(module => identifiesModelOwner(module.moduleSource) && inspectModelCatalogOwner(module).ok);
+  if (candidates.length !== 1) throw new Error(`Missing or ambiguous ${MODEL_DESCRIPTION} factory`);
+  const [module] = candidates;
+  if (modelMarkerCount(source) !== modelMarkerCount(module.moduleSource)) throw new Error(`Orphan ${MODEL_DESCRIPTION} marker`);
+  return source.slice(0, module.start) + patchModelFactory(module.moduleSource, module) + source.slice(module.end);
+}
+
+// A marker declaration belongs to the catalog. The two feature-owned Fast
+// helpers also read that field; exclude their complete canonical factories,
+// never arbitrary property reads or opaque mentions.
+function catalogMarkerCensus(source) {
+  let count=modelMarkerCount(source);
+  if(count===0)return 0;
+  requireModelRegistry(source);
+  for(const module of rspackModuleFactories(source,"service-tier-marker-census.js")){
+    if(!module.moduleSource.includes(MODEL_MARKER))continue;
+    if(resolverModuleState(module.moduleSource,module).kind==="patched" ||
+        fallbackModuleState(module.moduleSource,module).kind==="patched")count-=modelMarkerCount(module.moduleSource);
+  }
+  return count;
+}
+
+function patchApiKeyModelMarker(extractedDir, _context = {}, options = {}) {
+  const assetsDir = path.join(extractedDir, "webview", "assets");
+  const markerAssets = new Map();
+  const copies = findUniqueRspackModuleCopies(assetsDir, {
+    description: MODEL_DESCRIPTION,
+    sourceMatch(source, name) {
+      if (source.includes(MODEL_MARKER)) markerAssets.set(name,source);
+      return identifiesModelOwner(source);
+    },
+    matchModule: (source, module) => identifiesModelOwner(source) && inspectModelCatalogOwner(module).ok,
+  });
+  for (const copy of copies) {
+    requireModelRegistry(copy.source);
+    inspectModelMarker(copy.moduleSource, copy);
+    if (catalogMarkerCensus(copy.source) !== modelMarkerCount(copy.moduleSource)) throw new Error(`Orphan ${MODEL_DESCRIPTION} marker`);
+    markerAssets.delete(copy.assetName);
+  }
+  for(const [name,source] of markerAssets)if(catalogMarkerCensus(source)!==0)throw new Error(`Orphan ${MODEL_DESCRIPTION} marker in ${name}`);
+  return patchRspackModuleCopies(assetsDir, copies, patchModelFactory, options);
 }
 
 // --- Service tier resolver ---------------------------------------------------
@@ -202,6 +344,86 @@ function applyApiKeyServiceTierResolverPatch(source) {
   return source;
 }
 
+// The resolver's complete factory connects the classifier, provider-tier lookup,
+// request-id conversion, access predicate and public callers. Checking this
+// closed grammar also excludes shadow scopes, reassignment and opaque witnesses.
+function nativeResolverOwner(source, module) {
+  if (!module || module.params?.length !== 3 || new Set(module.params).size !== 3) return null;
+  if (typeof module.source === "string" && !createJavaScriptLexicalIndex(module.source).isCode(module.start)) return null;
+  const [argument, exportsName, requireName] = module.params;
+  if ([argument, exportsName, requireName].some(name => !new RegExp(`^${JS_IDENT}$`, "u").test(name))) return null;
+  const pattern = new RegExp(
+    `^let (?<priority>${JS_IDENT})="priority",(?<fast>${JS_IDENT})="fast",(?<standard>${JS_IDENT})="default";` +
+    `function (?<allow>${JS_IDENT})\\((?<at>${JS_IDENT}),(?<aa>${JS_IDENT})\\)\\{if\\(null==\\k<at>\\|\\|\\k<at>===\\k<standard>\\)return!0;if\\(null==\\k<aa>\\)return!1;let (?<ak>${JS_IDENT})=(?<classify>${JS_IDENT})\\(\\k<at>\\);return"flex"===\\k<at>\\|\\|\\k<aa>\\[\\k<ak>\\?\\?"fast"\\]\\}` +
+    `function \\k<classify>\\((?<ct>${JS_IDENT}),(?<cn>${JS_IDENT})\\)\\{let (?<normalized>${JS_IDENT})=\\k<cn>\\?\\.trim\\(\\)\\.toLowerCase\\(\\);return \\k<ct>===\\k<priority>\\|\\|\\k<ct>===\\k<fast>\\|\\|"fast"===\\k<normalized>\\?"fast":"ultrafast"===\\k<ct>\\|\\|"ultrafast"===\\k<normalized>\\?"ultrafast":null\\}` +
+    `function (?<resolve>${JS_IDENT})\\((?<rm>${JS_IDENT}),(?<rt>${JS_IDENT})\\)\\{return null==\\k<rt>\\?null:\\k<rt>===\\k<fast>\\?(?<findFast>${JS_IDENT})\\(\\k<rm>\\):\\k<rm>\\?\\.serviceTiers\\?\\.find\\((?<ri>${JS_IDENT})=>\\k<ri>\\.id===\\k<rt>\\)\\?\\?null\\}` +
+    `function \\k<findFast>\\((?<fm>${JS_IDENT})\\)\\{return \\k<fm>\\?\\.serviceTiers\\?\\.find\\((?<fi>${JS_IDENT})=>"fast"===\\k<classify>\\(\\k<fi>\\.id,\\k<fi>\\.name\\)\\|\\|"priority"===\\k<fi>\\.name.trim\\(\\)\\.toLowerCase\\(\\)\\)\\?\\?null\\}` +
+    `function (?<request>${JS_IDENT})\\((?<qm>${JS_IDENT}),(?<qt>${JS_IDENT})\\)\\{return \\k<resolve>\\(\\k<qm>,\\k<qt>\\)\\?\\.id\\?\\?null\\}` +
+    `${escapeRegExp(requireName)}\\.d\\(${escapeRegExp(exportsName)},\\{\\},\\{(?<requestKey>${JS_IDENT}):\\k<request>,` +
+    `(?<effectiveKey>${JS_IDENT}):function\\((?<em>${JS_IDENT}),(?<et>${JS_IDENT}),(?<ea>${JS_IDENT})=\\{fast:!0,ultrafast:!0\\}\\)\\{let (?<selected>${JS_IDENT})=\\k<et>\\?\\?\\k<request>\\(\\k<em>,\\k<em>\\?\\.defaultServiceTier\\?\\?null\\);return \\k<selected>!==\\k<standard>&&\\k<allow>\\(\\k<selected>,\\k<ea>\\)\\?\\k<selected>:null\\},` +
+    `(?<fastKey>${JS_IDENT}):\\k<findFast>,(?<defaultKey>${JS_IDENT}):"default-service-tier",` +
+    `(?<availableKey>${JS_IDENT}):function\\((?<vm>${JS_IDENT}),(?<vt>${JS_IDENT})\\)\\{return null!=\\k<resolve>\\(\\k<vm>,\\k<vt>\\)\\},` +
+    `(?<classifyKey>${JS_IDENT}):\\k<classify>,(?<accessKey>${JS_IDENT}):function\\((?<input>${JS_IDENT})\\)\\{let (?<requirements>${JS_IDENT})=\\k<input>\\.requirements\\?\\.featureRequirements,(?<accessFast>${JS_IDENT})=\\k<requirements>\\?\\.fast_mode!==!1;return\\{fast:\\k<accessFast>,ultrafast:"supportsIndependentSpeedModes"in \\k<input>&&!0===\\k<input>\\.supportsIndependentSpeedModes\\?\\k<requirements>\\?\\.ultrafast_mode!==!1:\\k<accessFast>&&\\k<requirements>\\?\\.ultrafast_mode!==!1\\}\\},` +
+    `(?<priorityKey>${JS_IDENT}):\\k<priority>,(?<allowKey>${JS_IDENT}):\\k<allow>\\}\\);?$`, "u");
+  const match = pattern.exec(source);
+  if (!match) return null;
+  const g = match.groups;
+  if (module.params.includes(PATCH_MARKER) || [g.rm,g.rt].includes(PATCH_MARKER)) return null;
+  const roots = [g.priority, g.fast, g.standard, g.allow, g.classify, g.resolve, g.findFast, g.request];
+  const keys = Object.entries(g).filter(([name]) => name.endsWith("Key")).map(([, value]) => value);
+  if (new Set(roots).size !== roots.length || roots.some(name => module.params.includes(name)) ||
+      new Set(keys).size !== keys.length || roots.includes(PATCH_MARKER)) return null;
+  for (const [names, captured] of [
+    [[g.at,g.aa,g.ak],[g.standard,g.classify]], [[g.ct,g.cn,g.normalized],[g.priority,g.fast]],
+    [[g.rm,g.rt],[g.fast,g.findFast]], [[g.fm],[g.classify]], [[g.qm,g.qt],[g.resolve]],
+    [[g.em,g.et,g.ea,g.selected],[g.request,g.standard,g.allow]], [[g.vm,g.vt],[g.resolve]],
+    [[g.input,g.requirements,g.accessFast],[]],
+  ]) {
+    if (new Set(names).size !== names.length || names.some(name => captured.includes(name))) return null;
+  }
+  if (g.ri === g.rt || g.fi === g.classify) return null;
+  const snapshot = {...module, moduleSource: source};
+  for (const [key, expression] of [[g.requestKey,g.request], [g.fastKey,g.findFast],
+    [g.classifyKey,g.classify], [g.priorityKey,g.priority], [g.allowKey,g.allow]]) {
+    const publication = findRspackExportPublication(snapshot,key);
+    if (publication?.expression !== expression) return null;
+  }
+  return { groups:g };
+}
+
+function resolverModuleState(source, module) {
+  if (!RESOLVER_NEEDLES.every(needle => source.includes(needle))) return {kind:"missing"};
+  const native = nativeResolverOwner(source, module);
+  if (native) return {kind:"current",owner:native};
+  const state = serviceTierResolverState(source);
+  if (state.kind !== "patched") return {kind:"missing"};
+  const {model, findFast} = state.match.groups;
+  const withoutFallback = replaceOnce(source, `?${findFast}(${model})??${PATCH_MARKER}(${model}):`, `?${findFast}(${model}):`);
+  const restored = withoutFallback && replaceOnce(withoutFallback, FALLBACK_FAST_TIER_HELPER, "");
+  const owner = restored && nativeResolverOwner(restored,module);
+  if (owner && applyApiKeyServiceTierResolverPatch(restored) === source) return {kind:"patched",owner};
+  return {kind:"missing"};
+}
+
+function applyApiKeyServiceTierResolverModule(source, module) {
+  const state = resolverModuleState(source,module);
+  if (state.kind === "patched") return source;
+  if (state.kind !== "current") throw new Error("Missing, ambiguous or partial current service tier resolver factory");
+  const patched = applyApiKeyServiceTierResolverPatch(source);
+  if (resolverModuleState(patched,module).kind !== "patched") throw new Error("Service tier resolver failed canonical replay");
+  return patched;
+}
+
+function patchApiKeyServiceTierResolver(extractedDir, options = {}) {
+  const assetsDir=path.join(extractedDir,"webview","assets");
+  const copies=findUniqueRspackModuleCopies(assetsDir, {
+    description:"current API key service tier resolver factory",
+    sourceMatch:source=>RESOLVER_NEEDLES.every(needle=>source.includes(needle)),
+    matchModule:(source,module)=>resolverModuleState(source,module).kind!=="missing",
+  });
+  return patchRspackModuleCopies(assetsDir,copies,applyApiKeyServiceTierResolverModule,options);
+}
+
 // --- Speed option list for the active model ----------------------------------
 
 function fallbackOptionsPattern() {
@@ -263,57 +485,196 @@ function applyFallbackFastTierPatch(source) {
   return source;
 }
 
+const OPTIONS_MESSAGES = "{standardLabel:{id:\"serviceTier.standard.label\",defaultMessage:\"Standard\",description:\"Label for the standard service tier\"},standardDescription:{id:\"serviceTier.standard.description\",defaultMessage:\"Default speed\",description:\"Description for the standard service tier\"},fastLabel:{id:\"serviceTier.fast.label\",defaultMessage:\"Fast\",description:\"Label for the Fast service tier\"},fastDescription:{id:\"serviceTier.fast.description\",defaultMessage:\"1.5x speed, increased usage\",description:\"Description for the Fast service tier\"},fast2xDescription:{id:\"serviceTier.fast.description.2x\",defaultMessage:\"2x speed, increased usage\",description:\"Description for a Fast service tier that runs at 2x speed\"},ultrafastLabel:{id:\"serviceTier.ultrafast.label\",defaultMessage:\"Ultrafast\",description:\"Label for the Ultrafast service tier\"},ultrafastDescription:{id:\"serviceTier.ultrafast.description\",defaultMessage:\"The fastest available responses for latency-sensitive work\",description:\"Description for the Ultrafast service tier\"}}";
+
+// The complete current options factory owns its Standard option, localization,
+// provider-tier mapping and public active-model wrapper. The low-level splice
+// above is used only after this closed native grammar and import publication
+// bindings have qualified the actual owner.
+const FALLBACK_MARKER = "codexLinuxApiKeyServiceTierOptions";
+const FALLBACK_DESCRIPTION = "current API key service tier options factory";
+const fallbackMarkerCount = source => source.split(FALLBACK_MARKER).length - 1;
+
+function nativeOptionsOwner(source, module) {
+  if (!module || module.params?.length !== 3 || new Set(module.params).size !== 3) return null;
+  const [argument, exportsName, requireName] = module.params;
+  if (module.params.includes("Boolean") || module.params.some(name => !new RegExp(`^${JS_IDENT}$`, "u").test(name))) return null;
+  const req = escapeRegExp(requireName), exp = escapeRegExp(exportsName);
+  const importValue = `${req}\\((?:"(?:\\\\.|[^"\\\\])*"|\\d+)\\)`;
+  const pattern = new RegExp(
+    `^var (?<resolver>${JS_IDENT})=${importValue},(?<messages>${JS_IDENT})=${importValue};` +
+    `let (?<standardValue>${JS_IDENT})="default",(?<labels>${JS_IDENT})=\\(0,\\k<messages>\\.(?<messagesKey>${JS_IDENT})\\)` +
+    `\\(${escapeRegExp(OPTIONS_MESSAGES)}\\),(?<standard>${JS_IDENT})=\\{description:\\k<labels>\\.standardDescription,iconKind:null,label:\\k<labels>\\.standardLabel,speedMultiplier:null,tier:null,value:null\\};` +
+    `function (?<builder>${JS_IDENT})\\((?<bm>${JS_IDENT}),(?<bt>${JS_IDENT})\\)\\{return\\[\\k<standard>,\\.\\.\\.\\(\\k<bt>\\?\\?\\[\\]\\)\\.map\\((?<tier>${JS_IDENT})=>\\{` +
+    `let (?<kind>${JS_IDENT})=\\(0,\\k<resolver>\\.(?<classifyKey>${JS_IDENT})\\)\\(\\k<tier>\\.id,\\k<tier>\\.name\\),(?<speed>${JS_IDENT})="fast"===\\k<kind>\\?1.5:null;` +
+    `return\\{description:function\\((?<dm>${JS_IDENT}),(?<ds>${JS_IDENT})\\)\\{switch\\(\\(0,\\k<resolver>\\.\\k<classifyKey>\\)\\(\\k<dm>\\?\\.id\\?\\?null,\\k<dm>\\?\\.name\\)\\)\\{` +
+    `case"fast":return 2===\\k<ds>\\?\\k<labels>\\.fast2xDescription:\\k<labels>\\.fastDescription;case"ultrafast":return \\k<dm>\\?\\.description\\|\\|\\k<labels>\\.ultrafastDescription;case null:return \\k<dm>\\?\\.description\\?\\?\\k<labels>\\.standardDescription\\}\\}` +
+    `\\(\\k<tier>,\\k<speed>\\),iconKind:\\k<kind>,label:function\\((?<lm>${JS_IDENT})\\)\\{switch\\(\\(0,\\k<resolver>\\.\\k<classifyKey>\\)\\(\\k<lm>\\?\\.id\\?\\?null,\\k<lm>\\?\\.name\\)\\)\\{` +
+    `case"fast":return \\k<labels>\\.fastLabel;case"ultrafast":return \\k<labels>\\.ultrafastLabel;case null:return \\k<lm>\\?\\.name\\?\\?\\k<labels>\\.standardLabel\\}\\}` +
+    `\\(\\k<tier>\\),speedMultiplier:\\k<speed>,tier:\\k<tier>,value:\\k<tier>\\.id\\}\\}\\)\\]\\}` +
+    `${req}\\.d\\(${exp},\\{(?<requestExport>${JS_IDENT}):\\(\\)=>\\k<resolver>\\.(?<requestKey>${JS_IDENT}),` +
+    `(?<effectiveExport>${JS_IDENT}):\\(\\)=>\\k<resolver>\\.(?<effectiveKey>${JS_IDENT}),` +
+    `(?<fastExport>${JS_IDENT}):\\(\\)=>\\k<resolver>\\.(?<fastKey>${JS_IDENT}),` +
+    `(?<availableExport>${JS_IDENT}):\\(\\)=>\\k<resolver>\\.(?<availableKey>${JS_IDENT}),` +
+    `(?<priorityExport>${JS_IDENT}):\\(\\)=>\\k<resolver>\\.(?<priorityKey>${JS_IDENT}),` +
+    `(?<fastValueExport>${JS_IDENT}):\\(\\)=>"fast"\\},` +
+    `\\{(?<builderExport>${JS_IDENT}):\\k<builder>,(?<optionsExport>${JS_IDENT}):function\\((?<model>${JS_IDENT})\\)\\{return \\k<builder>\\(\\k<model>\\?\\.model,\\k<model>\\?\\.serviceTiers\\)\\},` +
+    `(?<findExport>${JS_IDENT}):function\\((?<models>${JS_IDENT}),(?<target>${JS_IDENT}),(?<selectedTier>${JS_IDENT})\\)\\{return \\k<models>\\?\\.find\\((?<candidate>${JS_IDENT})=>\\k<candidate>\\.model===\\k<target>&&\\(0,\\k<resolver>\\.\\k<availableKey>\\)\\(\\k<candidate>,\\k<selectedTier>\\)\\)\\?\\?null\\},` +
+    `(?<configExport>${JS_IDENT}):\\{type:"fromConfig"\\},(?<defaultExport>${JS_IDENT}):function\\((?<defaultInput>${JS_IDENT})\\)\\{return \\k<defaultInput>\\?\\?\\k<standardValue>\\},` +
+    `(?<isFastExport>${JS_IDENT}):function\\((?<classifyInput>${JS_IDENT})\\)\\{return"fast"===\\(0,\\k<resolver>\\.\\k<classifyKey>\\)\\(\\k<classifyInput>\\)\\},` +
+    `(?<standardExport>${JS_IDENT}):function\\((?<standardInput>${JS_IDENT})\\)\\{return \\k<standardInput>\\?\\?"standard"\\},` +
+    `(?<toSettingExport>${JS_IDENT}):function\\((?<toSettingInput>${JS_IDENT})\\)\\{return null==\\k<toSettingInput>\\?\\{type:"standard"\\}:\\{serviceTier:\\k<toSettingInput>,type:"custom"\\}\\},` +
+    `(?<fromSettingExport>${JS_IDENT}):function\\((?<setting>${JS_IDENT}),(?<configured>${JS_IDENT})\\)\\{switch\\(\\k<setting>\\.type\\)\\{case"fromConfig":return \\k<configured>;case"standard":return \\k<standardValue>;case"custom":return \\k<setting>\\.serviceTier\\}\\},` +
+    `(?<labelsExport>${JS_IDENT}):\\k<labels>\\}\\);?$`, "u");
+  const match = pattern.exec(source);
+  if (!match) return null;
+  const g = match.groups;
+  const roots = [g.resolver, g.messages, g.standardValue, g.labels, g.standard, g.builder];
+  const exports = Object.entries(g).filter(([key]) => key.endsWith("Export")).map(([, value]) => value);
+  if (new Set(roots).size !== roots.length || roots.some(name => module.params.includes(name) || name === PATCH_MARKER || name === "Boolean") ||
+      new Set(exports).size !== exports.length || fallbackMarkerCount(source) !== 0) return null;
+  for (const [locals, captured] of [
+    [[g.bm,g.bt],[g.standard,g.resolver,g.labels]], [[g.tier,g.kind,g.speed],[g.resolver,g.labels]],
+    [[g.dm,g.ds],[g.resolver,g.labels]], [[g.lm],[g.resolver,g.labels]],
+    [[g.model],[g.builder,PATCH_MARKER,"Boolean"]], [[g.models,g.target,g.selectedTier],[g.resolver]],
+    [[g.defaultInput],[g.standardValue]], [[g.classifyInput],[g.resolver]],
+    [[g.setting,g.configured],[g.standardValue]],
+  ]) if (new Set(locals).size !== locals.length || locals.some(name => captured.includes(name))) return null;
+  if ([g.target,g.selectedTier,g.resolver].includes(g.candidate)) return null;
+  const snapshot = { ...module, moduleSource: source };
+  const resolver = findRspackRequireBinding(snapshot,g.resolver), messages = findRspackRequireBinding(snapshot,g.messages);
+  if (resolver == null || messages == null || resolver.moduleId === messages.moduleId) return null;
+  if (findRspackExportPublication(snapshot,g.builderExport)?.expression !== g.builder ||
+      findRspackExportPublication(snapshot,g.optionsExport)?.fn == null) return null;
+  return { groups:g, resolverImport:resolver, messagesImport:messages };
+}
+
+function fallbackContribution(source) {
+  const patched = applyFallbackFastTierPatch(source);
+  return patched === source ? null : replaceOnce(patched,FALLBACK_FAST_TIER_HELPER,`/*${FALLBACK_MARKER}*/${FALLBACK_FAST_TIER_HELPER}`);
+}
+
+function fallbackModuleState(source, module) {
+  const native = nativeOptionsOwner(source,module);
+  if (native) return { kind:"current", owner:native };
+  if (fallbackMarkerCount(source) !== 1) return { kind:"missing" };
+  const withoutMarker = replaceOnce(source,`/*${FALLBACK_MARKER}*/`,"");
+  if (withoutMarker == null) return { kind:"missing" };
+  const patched = fallbackFastTierState(withoutMarker);
+  if (patched.kind !== "patched") return { kind:"missing" };
+  const {model} = patched.match.groups;
+  const args = `${model}?.serviceTiers?.length?${model}.serviceTiers:[${PATCH_MARKER}(${model})].filter(Boolean)`;
+  const restoredArgs = replaceOnce(withoutMarker,args,`${model}?.serviceTiers`);
+  const restored = restoredArgs && replaceOnce(restoredArgs,FALLBACK_FAST_TIER_HELPER,"");
+  const owner = restored && nativeOptionsOwner(restored,module);
+  if (owner && fallbackContribution(restored) === source) return { kind:"patched",owner };
+  return { kind:"missing" };
+}
+
+function applyFallbackFastTierModule(source,module) {
+  const state = fallbackModuleState(source,module);
+  if (state.kind === "patched") return source;
+  if (state.kind !== "current") throw new Error(`Missing, ambiguous or partial ${FALLBACK_DESCRIPTION}`);
+  const patched = fallbackContribution(source);
+  if (patched == null || fallbackModuleState(patched,module).kind !== "patched") {
+    throw new Error("API key service tier options failed canonical replay");
+  }
+  return patched;
+}
+
+function requireOptionsRegistry(source) {
+  const headers=[...source.matchAll(/\bexport\s+const\s+__webpack_modules__\s*=\s*\{/gu)];
+  if (headers.length !== 1) throw new Error(`Missing or ambiguous ${FALLBACK_DESCRIPTION} registry`);
+  const [header]=headers;
+  if (!createJavaScriptLexicalIndex(source.slice(0,header.index+header[0].length)).isRoot(header.index)) {
+    throw new Error(`Opaque or nested ${FALLBACK_DESCRIPTION} registry`);
+  }
+}
+
+function patchApiKeyServiceTierFallback(extractedDir, options={}) {
+  const assetsDir=path.join(extractedDir,"webview","assets"), markerAssets=new Set();
+  const copies=findUniqueRspackModuleCopies(assetsDir,{
+    description:FALLBACK_DESCRIPTION,
+    sourceMatch(source,name){
+      if(source.includes(FALLBACK_MARKER))markerAssets.add(name);
+      return source.includes(FALLBACK_MARKER)||FALLBACK_NEEDLES.every(needle=>source.includes(needle));
+    },
+    matchModule:(source,module)=>fallbackModuleState(source,module).kind!=="missing",
+  });
+  // Resolve the actual provider-tier classifier used by the builder, rather
+  // than accepting any same-spelled property on an unrelated imported module.
+  const resolvers=findUniqueRspackModuleCopies(assetsDir,{
+    description:"current API key service tier resolver dependency",
+    sourceMatch:source=>RESOLVER_NEEDLES.every(needle=>source.includes(needle)),
+    matchModule:(source,module)=>resolverModuleState(source,module).kind!=="missing",
+  });
+  const resolverStates=resolvers.map(module=>resolverModuleState(module.moduleSource,module));
+  const resolverGroups=resolverStates.map(state=>state.owner?.groups);
+  if(resolverGroups.some(groups=>groups==null) || new Set(resolverStates.map(state=>state.kind)).size!==1) {
+    throw new Error("Damaged or partially applied service tier options resolver dependency");
+  }
+  for(const copy of copies){
+    requireOptionsRegistry(copy.source);
+    const state=fallbackModuleState(copy.moduleSource,copy);
+    const owner=state.owner;
+    if(owner==null || fallbackMarkerCount(copy.source)!==fallbackMarkerCount(copy.moduleSource))throw new Error("Orphan service tier options marker");
+    markerAssets.delete(copy.assetName);
+    if(owner.resolverImport.moduleId!==resolvers[0].moduleId || resolverGroups.some(g=>
+      ["classifyKey","requestKey","effectiveKey","fastKey","availableKey","priorityKey"].some(key=>g[key]!==owner.groups[key]))) {
+      throw new Error("Service tier options import does not bind its native resolver publications");
+    }
+  }
+  if(markerAssets.size)throw new Error(`Orphan service tier options marker in ${[...markerAssets].join(", ")}`);
+  return patchRspackModuleCopies(assetsDir,copies,applyFallbackFastTierModule,options);
+}
+
 const descriptors = [
   {
     id: "api-key-service-tier-gate",
-    phase: "webview-asset",
+    phase: "extracted-app:pre-webview",
     order: 20600,
     ciPolicy: "optional",
-    assetNeedles: GATE_NEEDLES,
-    missingDescription: "current API key service tier gate bundle",
-    skipDescription: "API key service tier gate patch",
-    apply: applyApiKeyServiceTierGatePatch,
+    apply: patchApiKeyServiceTierGate,
   },
   {
     id: "api-key-service-tier-model",
-    phase: "webview-asset",
+    phase: "extracted-app:pre-webview",
     order: 20605,
     ciPolicy: "optional",
-    assetNeedles: MODEL_NEEDLES,
-    missingDescription: "current API key service tier model bundle",
-    skipDescription: "API key model service tier marker patch",
-    apply: applyApiKeyModelMarkerPatch,
+    apply: patchApiKeyModelMarker,
   },
   {
     id: "api-key-service-tier-resolver",
-    phase: "webview-asset",
+    phase: "extracted-app:pre-webview",
     order: 20608,
     ciPolicy: "optional",
-    assetNeedles: RESOLVER_NEEDLES,
-    missingDescription: "current API key service tier resolver bundle",
-    skipDescription: "API key service tier resolver patch",
-    apply: applyApiKeyServiceTierResolverPatch,
+    apply: patchApiKeyServiceTierResolver,
   },
   {
     id: "api-key-service-tier-fallback",
-    phase: "webview-asset",
+    phase: "extracted-app:pre-webview",
     order: 20610,
     ciPolicy: "optional",
-    assetNeedles: FALLBACK_NEEDLES,
-    missingDescription: "current API key service tier fallback bundle",
-    skipDescription: "API key fallback fast tier patch",
-    apply: applyFallbackFastTierPatch,
+    apply: patchApiKeyServiceTierFallback,
   },
 ];
 
 module.exports = {
   FALLBACK_FAST_TIER_HELPER,
   applyApiKeyModelMarkerPatch,
+  patchApiKeyModelMarker,
   applyApiKeyServiceTierGatePatch,
+  patchApiKeyServiceTierGate,
   applyApiKeyServiceTierResolverPatch,
   applyFallbackFastTierPatch,
+  applyApiKeyServiceTierResolverModule,
+  patchApiKeyServiceTierResolver,
+  resolverModuleState,
   descriptors,
   fallbackFastTierState,
+  fallbackModuleState,
+  applyFallbackFastTierModule,
+  patchApiKeyServiceTierFallback,
   serviceTierGateState,
   serviceTierResolverState,
 };
