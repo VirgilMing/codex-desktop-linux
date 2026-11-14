@@ -263,23 +263,120 @@ async function catalogMessages(source, locale) {
   return module.exports;
 }
 
-function settingsHarness({ locale = "en", localStorage = storage(), platform = "linux" } = {}) {
-  const values = [], events = new Map();
-  let index = 0;
+
+// A test-only seam: bind roles captured from one actual factory, then execute
+// only our generated setting component. No native factory is evaluated.
+function settingsReferenceParts(reference) {
+  const call = /^\(0,([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\)$/.exec(reference);
+  const value = call?.[1] ?? reference;
+  assert.match(value, /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/);
+  return value.split(".");
+}
+
+function settingsRoleContext(contract, roles) {
+  const context = {};
+  for (const [role, stub] of Object.entries(roles)) {
+    const parts = settingsReferenceParts(contract[role]);
+    let owner = context;
+    for (const part of parts.slice(0, -1)) owner = owner[part] ??= {};
+    assert.equal(Object.hasOwn(owner, parts.at(-1)), false, `colliding role ${role}`);
+    owner[parts.at(-1)] = stub;
+  }
+  return context;
+}
+
+function qualifiedSettingsContract(source) {
+  const { rspackModuleFactories, findRspackRequireBinding } = require("../../scripts/patches/lib/rspack-module-assets.js");
+  const contract = settingsContract(source);
+  assert.ok(contract, "native General setting contract");
+  const owners = [...rspackModuleFactories(source, "selected General text")]
+    .filter(module => module.start < contract.ownerEnd && contract.ownerEnd <= module.end);
+  assert.equal(owners.length, 1, "one native factory owns every captured role");
+  for (const role of ["row", "toggle", "react", "platformHook", "jsx", "intlHook"]) {
+    const root = settingsReferenceParts(contract[role])[0];
+    assert.ok(findRspackRequireBinding(owners[0], root), `factory-root import for ${role}`);
+  }
+  return contract;
+}
+
+function selectedSettingsGeneralSource() {
+  const file = process.env.CODEX_SIGNED_SETTINGS_GENERAL_ASSET;
+  assert.ok(file);
+  const info = fs.lstatSync(file);
+  assert.ok(info.isFile() && !info.isSymbolicLink());
+  assert.ok(info.size <= 512 * 1024, "selected General text must stay within512KiB");
+  return fs.readFileSync(file, "utf8");
+}
+
+function renamedSettingsFixture() {
+  const aliases = { n: "jsxRuntime", m: "reactRuntime", P: "rowRuntime", N: "toggleRuntime", ed: "platformRuntime", b: "localeRuntime" };
+  return settingsFixture().replace(/\b(?:n|m|P|N|ed|b)\b/g, name => aliases[name]);
+}
+
+function settingsHarness({ locale = "en", localStorage = storage(), platform = "linux", contract = settingsContract(settingsFixture()) } = {}) {
+  const values = [], events = new Map(), cleanups = [];
+  let index = 0, mounted = false;
   const React = { useState(initial) {
     const current = index++;
     if (!(current in values)) values[current] = typeof initial === "function" ? initial() : initial;
     return [values[current], (next) => { values[current] = typeof next === "function" ? next(values[current]) : next; }];
-  }, useEffect(callback) { callback(); } };
+  }, useEffect(callback) { if (!mounted) cleanups.push(callback()); } };
   const context = {
-    localStorage, m: React, ed: { V: () => ({ platform }) },
-    b: { A: () => ({ formatMessage: ({ id, defaultMessage }) => translations[locale]?.[MESSAGE_IDS.indexOf(id)] ?? defaultMessage }) },
-    P: { ic: "row" }, N: { l: "toggle" }, n: { jsx: (type, props) => ({ type, props }) },
+    ...settingsRoleContext(contract, {
+      react: React, platformHook: () => ({ platform }),
+      intlHook: () => ({ formatMessage: ({ id, defaultMessage }) => translations[locale]?.[MESSAGE_IDS.indexOf(id)] ?? defaultMessage }),
+      row: "row", toggle: "toggle", jsx: { jsx: (type, props) => ({ type, props }) },
+    }),
+    localStorage,
     window: { addEventListener: (name, callback) => events.set(name, callback), removeEventListener: (name) => events.delete(name) },
   };
-  const render = vm.runInNewContext(settingComponent(settingsContract(settingsFixture())) + ';codexLinuxReasoningVisibilitySetting', context);
-  return { localStorage, events, render() { index = 0; return render(); } };
+  const render = vm.runInNewContext(settingComponent(contract) + ';codexLinuxReasoningVisibilitySetting', context);
+  return { localStorage, events,
+    render() { index = 0; const row = render(); mounted = true; return row; },
+    unmount() { cleanups.splice(0).forEach(cleanup => cleanup?.()); },
+  };
 }
+
+function qualifyReasoningSettingBehavior(contract) {
+  const localStorage = storage(), oldSession = { localStorage };
+  assert.equal(reasoningVisibilitySnapshot(oldSession), false);
+  const harness = settingsHarness({ contract, localStorage });
+  let row = harness.render();
+  assert.equal(row.type, "row"); assert.equal(row.props.control.type, "toggle");
+  assert.equal(row.props.control.props.checked, false);
+  row.props.control.props.onChange(true);
+  assert.equal(localStorage.getItem(STORAGE_KEY), "1");
+  assert.equal(harness.render().props.control.props.checked, true);
+  assert.equal(reasoningVisibilitySnapshot(oldSession), false, "active renderer snapshot waits for restart");
+  assert.equal(reasoningVisibilitySnapshot({ localStorage }), true);
+  harness.unmount(); assert.equal(harness.events.has("storage"), false);
+  const reopened = settingsHarness({ contract, localStorage });
+  assert.equal(reopened.render().props.control.props.checked, true);
+  localStorage.setItem(STORAGE_KEY, "0"); reopened.events.get("storage")({ key: STORAGE_KEY });
+  assert.equal(reopened.render().props.control.props.checked, false);
+  localStorage.setItem(STORAGE_KEY, "1"); reopened.events.get("storage")({ key: "unrelated" });
+  assert.equal(reopened.render().props.control.props.checked, false);
+  reopened.events.get("storage")({ key: null });
+  assert.equal(reopened.render().props.control.props.checked, true);
+  reopened.render().props.control.props.onChange(false);
+  assert.equal(localStorage.getItem(STORAGE_KEY), "0");
+  assert.equal(reasoningVisibilitySnapshot({ localStorage }), false);
+  reopened.unmount();
+  const denied = settingsHarness({ contract, localStorage: { getItem: () => null, setItem: () => { throw Error("denied"); } } });
+  denied.render().props.control.props.onChange(true);
+  row = denied.render(); assert.equal(row.props.control.props.checked, false);
+  assert.equal(row.props.description, translations.en[2]); denied.unmount();
+  const otherPlatform = settingsHarness({ contract, platform: "macOS" });
+  assert.equal(otherPlatform.render(), null); otherPlatform.unmount();
+}
+
+test("foundation General roles drive reasoning persistence, cleanup and restart with renamed aliases", () => {
+  for (const source of [settingsFixture(), renamedSettingsFixture()]) qualifyReasoningSettingBehavior(qualifiedSettingsContract(source));
+});
+
+test("foundation current General roles drive reasoning setting behavior without evaluating its factory", {
+  skip: !process.env.CODEX_SIGNED_SETTINGS_GENERAL_ASSET,
+}, () => qualifyReasoningSettingBehavior(qualifiedSettingsContract(selectedSettingsGeneralSource())));
 
 test("native settings toggle saves both choices and a fresh renderer honors the saved value", () => {
   const harness = settingsHarness();
@@ -334,7 +431,7 @@ function settingsTree(t, locales = ["pl-PL", "es-419"]) {
   return { root, assets, catalog, settingsPath: path.join(assets, "572868.36a6c86221.js") };
 }
 
-test("native row and all 64 locale catalogs patch idempotently while existing messages stay unchanged", async (t) => {
+test("native row and all 65 locale catalogs patch idempotently while existing messages stay unchanged", async (t) => {
   const locales = Object.keys(translations).filter((locale) => locale !== "en");
   const { root, catalog, settingsPath } = settingsTree(t, locales);
   assert.deepEqual(applySettingsPatch(root), { changed: true });
@@ -428,4 +525,45 @@ test("official signed General settings module and all locale catalogs satisfy th
   assert.deepEqual(extraLoaders, []);
   const catalogs = catalogPatches(assetsDir, listWebviewScriptAssets(signedApp), fs.readFileSync(path.join(assetsDir, loaderName), "utf8"));
   assert.equal(catalogs.length, 65);
+});
+
+
+test("registered General setting restores every file after a truncated write and retries canonically", async (t) => {
+  const { createPatchReport } = require("../../scripts/lib/patch-report.js");
+  const { applyExtractedAppPatchDescriptors } = require("../../scripts/patches/engine.js");
+  const { settingsDescriptor } = require("./settings.js");
+  t.mock.method(console, "warn", () => {});
+  for (const failedRole of ["settings", "first catalog", "last catalog"]) {
+    await t.test(failedRole, (t) => {
+      const { root, assets, catalog, settingsPath } = settingsTree(t);
+      const files = [settingsPath, catalog("pl-PL"), catalog("es-419"), path.join(assets, "496175.cf5ad221c1.js")];
+      for (const [index, file] of files.entries()) fs.chmodSync(file, index % 2 ? 0o640 : 0o600);
+      const snapshot = () => files.map((file) => ({ file, bytes: fs.readFileSync(file), mode: fs.statSync(file).mode & 0o777 }));
+      const before = snapshot(), names = fs.readdirSync(assets).sort();
+      const run = () => {
+        const report = createPatchReport();
+        applyExtractedAppPatchDescriptors(root, [settingsDescriptor], {}, report, "extracted-app:post-webview");
+        return report.patches[0].status;
+      };
+      const target = files[["settings", "first catalog", "last catalog"].indexOf(failedRole)];
+      const originalWrite = fs.writeFileSync;
+      let failed = false;
+      const fault = t.mock.method(fs, "writeFileSync", (file, bytes, ...args) => {
+        if (file === target && !failed) {
+          failed = true;
+          originalWrite(file, "truncated");
+          throw Error("injected General setting write failure");
+        }
+        return originalWrite(file, bytes, ...args);
+      });
+      assert.equal(run(), "skipped-optional");
+      assert.equal(failed, true);
+      assert.deepEqual(snapshot(), before, "settings and every catalog retain exact bytes and modes");
+      assert.deepEqual(fs.readdirSync(assets).sort(), names);
+      fault.mock.restore();
+      assert.equal(run(), "applied");
+      assert.equal(run(), "already-applied");
+      assert.deepEqual(snapshot().map(({ mode }) => mode), before.map(({ mode }) => mode));
+    });
+  }
 });
