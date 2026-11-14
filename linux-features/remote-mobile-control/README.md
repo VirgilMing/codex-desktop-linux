@@ -58,15 +58,22 @@ not been tested.
 What it changes:
 
 - Replaces the upstream native `remote-control-device-key.node` addon with a
-  Linux JavaScript ECDSA P-256 key store. The upstream device-key provider
-  still serializes and validates every signing payload; only its addon is
-  swapped.
+  Linux JavaScript ECDSA P-256 key store. The current native signing base,
+  Remote subclass, serialization domain, nonce and digest validators stay
+  unchanged. The Linux addon is accepted through the same native addon schema
+  before the Remote instance returns it from `getAddon()`.
 - Adds the bare `Remote-control client key material missing` 403 detail to the
   upstream re-enrollment predicate, which only recognizes the prefixed form.
-- Lets the remote-control Connections UI render on Linux when upstream marks
-  the feature unavailable or withholds the remote-control visibility rollout.
+- Lets the remote-control Connections UI render on Linux before outbound
+  loading is enabled or when an endpoint is unavailable, while retaining the
+  native access-required refusal. Account authorization, enrollment, MFA and
+  the actual connection list remain native.
 - Keeps the `Control other devices` settings tab reachable on Linux so this
   desktop can authorize outbound control of another enrolled device.
+- Lets the outbound Remote environment loader proceed on Linux after calling
+  the original rollout hook once with its original gate ID. Other platforms
+  return the original hook result without coercion; native hook failures still
+  propagate before the platform lookup.
 - Refreshes the remote Connections settings state every 5 seconds and
   immediately after focus, visibility, online, or resume signals.
 - Extends the current upstream event-discovery queue to buffer late
@@ -75,15 +82,44 @@ What it changes:
   completed item is also restored when its local started state was absent.
   The upstream request queue, notification timestamps, automation capability,
   turn merge policy, retry, and discard lifecycle remain intact.
-- Keeps the current abortable Remote status subscriptions and their disposable
-  cleanup; skips the initial status RPC for Linux Remote SSH and outbound-control
-  hosts while preserving local-host reads and notification delivery.
+- Keeps native abortable Remote status subscriptions and disposable cleanup.
+  On Linux, host identifiers beginning with `remote-ssh` or `remote-control:`
+  skip only the initial status RPC. Other host identifiers retain their native
+  read behavior, and notification delivery stays active.
 - Recovers stale remote terminal status when `waitingOnUserInput` remains active
   after the matching input request has already cleared.
-- Keeps local Linux Remote turns on `summary = "none"` unless a turn explicitly
-  requests a reasoning summary, preventing Desktop's rollout gate from adding
-  repeated English reasoning titles to the mobile transcript. Outside local
-  Linux durable turns, it preserves upstream Aeon and rollout summary overrides.
+- Lets the native current-conversation activity indicator use an active runtime
+  or in-progress turn before a stream role has been assigned, while follower
+  priority and inactive/resume/read-only fallbacks remain intact. Its four
+  existing local-model selector reads retain the same conversation key. Native
+  flag gates, badge placement, labels, styles and row actions are preserved.
+  This changes the supplied status classification without adding a host filter,
+  status RPC, state mutation or unconditional indicator visibility. The complete
+  published row/indicator and all physical copies qualify before an atomic edit;
+  orphan markers or incomplete owners cannot count as already applied.
+- Qualifies the published manager's notification and request paths, its discovery
+  lifecycle and native notification queue before extending unknown literal-local
+  thread discovery to item-started/completed events. The local gate uses the
+  original constructor host input and native host getter; canonical queue replay
+  retains the bound native history readers and merge provider. It keeps queue
+  ordering, timestamps, capability attribution, duplicate/delta handling, one
+  scheduled retry, suppression, retry cancellation and stale-generation fences.
+  Cloud and other host discovery gates retain their native behavior. All copies
+  of the selected module qualify before an atomic write; partial, dead, captured
+  or ambiguous owners are rejected. Tests execute the bounded native lifecycle
+  and queue with mocks; they do not start the app or a remote service.
+- Defaults local Linux Remote durable turns to `summary = "none"` when the
+  current turn and effective latest-thread settings have no summary value and
+  the available model configuration has no non-null `model_reasoning_summary`.
+  This suppresses prior-turn-only inheritance and automatic rollout/Aeon
+  summaries on that target. Saved latest-thread values, including `null`, block
+  this extra default and retain their native priority relative to automatic,
+  model, and per-turn choices. A failed or unavailable configuration read also
+  keeps the native result. Outside local Linux durable turns, upstream summary
+  resolution is unchanged. If `reasoning-visibility` is also selected and its
+  **Show reasoning summaries** switch is on for the current renderer session,
+  that explicit preference takes precedence over this extra `none` default;
+  model configuration and current per-turn choices still retain native priority.
 - Preserves the official Chrome Browser Use client. Upstream now routes browser
   RPCs through its browser service and owns backend eligibility and preferences;
   the retired client allowlist workaround is no longer staged.
@@ -120,8 +156,32 @@ What it changes:
   `codex app-server proxy` when a declarative service owns the control socket.
   The proxy forwards the complete Desktop RPC stream instead of splitting
   enablement, pairing, status, and conversation RPCs between two processes.
-- Updates Remote settings and mobile setup copy so the experimental Linux flow
-  is not described as Mac-only.
+- Validates native Remote settings, host setup and Connections copy without
+  rewriting it. The current Linux platform path selects upstream PC messages;
+  macOS-only locked Computer Use stays behind its native macOS and capability
+  guards. Pairing instructions describe the other computer and retain native
+  Mac/PC labels. Existing message IDs, localized formatting, interpolation
+  values and selected Connections search records remain unchanged. Missing,
+  ambiguous or drifted selected branches and links fail closed. A successful
+  first or repeated qualification reports `already-applied` with no ASAR byte
+  changes and no injected copy marker.
+- Opens the outbound Connections flow on Linux after qualifying its current
+  settings owner, native hide-gate subscription, tab resolver and selected
+  consumers. The original subscription still runs once. Linux detection retains
+  the existing Electron user-agent policy; other user agents retain the native
+  hide-gate result. Native availability/access-required denial, authentication,
+  pairing and local-client requirements still apply. Inbound setup, SSH routes,
+  native copy and the retired upstream SSH installer actions remain unchanged. Missing,
+  ambiguous, orphaned or drifted owned state fails closed before any asset write.
+- Preserves the current Connections refresh behavior after qualifying its live
+  native callback and effect: five-second polling plus visible focus, online,
+  resume and visibility refresh. Triggers use the same current service list and
+  retain mutation-pending suppression, native availability and abort handling.
+  Concurrent work is coalesced; event bursts retain the existing one-second
+  throttle. Unmount aborts pending work and removes intervals, delayed timers
+  and every listener. Only the effect body changes; service methods and policy
+  remain upstream-owned. Unpublished, captured, partial or orphaned state fails
+  closed rather than accepting a marker alone.
 - Declaratively stages `.codex-linux/cold-start.d/remote-mobile-control`, a
   feature-owned cold-start hook that starts the app-server daemon with `remote-control start`
   through the official Codex executable bundled in the Linux package. It does
@@ -152,26 +212,149 @@ feature descriptor to appear exactly once in this table.
 | `linux-remote-mobile-app-server-remote-control` | `mobile-host` | Starts a native Desktop-owned app-server or proxies Desktop RPCs to a declarative owner. |
 | `linux-remote-control-load-gate` | `outbound-control` | Allows remote-control environments to load in Connections. |
 | `linux-remote-control-feature-sync` | `shared-boundary` | Enables `remote_control` in the main-process experimental feature sync only for the local app server and excludes Remote SSH, WSL, and cloud hosts. |
-| `linux-remote-control-visibility` | `outbound-control` | Exposes remote-control Connections UI when the server permits it. |
-| `linux-remote-control-copy` | `shared-boundary` | Rewrites Linux copy shared by host setup and outbound Connections. |
-| `linux-remote-control-settings-ux` | `shared-boundary` | Adapts the shared Connections copy and outbound-control visibility without reviving the retired upstream SSH installer. |
+| `linux-remote-control-visibility` | `outbound-control` | Opens the Linux Connections view for pre-enable/unavailable states while retaining native access-required denial and actual account/enrollment/list data. |
+| `linux-remote-control-copy` | `shared-boundary` | Qualifies native Linux PC branches, macOS capability guards, other-computer pairing copy, formatter forwarding and selected Connections search data without rewriting text. |
+| `linux-remote-control-settings-ux` | `shared-boundary` | Qualifies the native hide-gate subscription, outbound consumers and tab resolver, then adds the Linux user-agent alternative only to the owned outbound flag while retaining native policy and retired actions. |
 | `linux-remote-control-client-revoke-setup-reset` | `mobile-host` | Resets this host's mobile setup state (the `codex-mobile-has-connected-device` application state) only after the last external controller is removed. |
-| `linux-remote-connections-refresh` | `shared-boundary` | Refreshes the shared Connections list without starting or enabling any host runtime. |
-| `linux-remote-mobile-reasoning-summary-none` | `mobile-host` | Prevents inherited or rollout-forced reasoning summaries from polluting this host's mobile transcript. |
+| `linux-remote-connections-refresh` | `shared-boundary` | Qualifies the native live refresh callback, effect/event bridges and providers, then retains five-second polling and visible focus/online/resume refresh with coalescing and complete cleanup. It never starts or enables a host runtime. |
+| `linux-remote-mobile-reasoning-summary-none` | `mobile-host` | Defaults local durable summaries to `none` while preserving effective settings, model/per-turn choices, and an enabled Reasoning Visibility session preference. |
 | `linux-remote-mobile-conversation-hydration` | `mobile-host` | Extends upstream's hydration queue to recover unknown local conversations from ordered turn and item notifications. |
 | `linux-remote-terminal-status-recovery` | `mobile-host` | Reconciles stale mobile terminal state with actual pending requests. |
-| `linux-remote-control-status-read-guard` | `shared-boundary` | Sends `remoteControl/status/read` only to the local host, never Remote SSH or remote-control environment hosts. |
-| `linux-remote-control-status-wait` | `shared-boundary` | Gives the selected host a Linux-specific connection convergence window without changing host ownership. |
-| `linux-remote-control-enable-for-host-params` | `shared-boundary` | Uses the current enable/disable RPC parameter contract without choosing which host is targeted. |
-| `linux-remote-control-enablement-bridge` | `shared-boundary` | Enables the current outbound remote-connections service on Linux without changing its service-owned auto-connect choices. |
-| `linux-remote-control-auto-connect-contract` | `outbound-control` | Validates the unique upstream service and settings caller that preserve an explicit auto-connect choice. |
+| `linux-remote-control-status-read-guard` | `shared-boundary` | Skips the initial Linux read for exact `remote-ssh` / `remote-control:` prefixes while retaining native reads for other hosts, notifications and cleanup. |
+| `linux-remote-control-status-wait` | `shared-boundary` | Gives each supplied host a 30-second Linux connection window (5 seconds otherwise), preserving native watcher settlement and caller ownership. |
+| `linux-remote-control-enable-for-host-params` | `shared-boundary` | Qualifies the native selected-host client, status mapper and public fallback caller, then emits parameterless enable/disable requests without changing host choice. |
+| `linux-remote-control-enablement-bridge` | `shared-boundary` | Qualifies the native gate hook, live component and late service facade, then enables the current outbound service on Linux while retaining service-owned auto-connect choices. |
+| `linux-remote-control-auto-connect-contract` | `outbound-control` | Validates the live native service, persistent handler, Settings mutation/UI consumers, bootstrap and every late facade copy without changing ASAR bytes. |
 | `linux-remote-mobile-active-status` | `mobile-host` | Derives mobile active state from the local thread runtime. |
 
+The device-key descriptor prepares the complete routed main-process inventory
+before the webview pass. It requires the live startup-to-host graph, the native
+signing base and Remote subclass, their actual addon schema, and the device-key
+construction in that host's constructor. Opaque text, unrelated constructors,
+shadowed provider/schema names, duplicate or damaged carriers, and partial own
+artifacts are errors when the feature is enabled. Preparation retains an exact
+native inverse and requires canonical replay before a single transactional
+write. Existing key-store encryption, permissions, locking and migration
+strategies are unchanged.
+
+The feature-sync descriptor also prepares the complete main-process inventory
+before the ordinary webview pass. It qualifies the live startup/constructor
+connection-registry and published-assignment wiring, complete native sync owner,
+allowlist, compression schema and actual equality-getter/import bindings. The
+small helper lives at the qualified factory root and requires an uncaptured Node
+`process` global. Its existing behavior adds `remote_control: true` only to a
+clone of the supplied enablement for a Linux literal `local` host; other hosts
+and platforms retain the original enablement object. Native assignment readiness,
+per-record generations, current connection-map identity, disconnected resets,
+propagation/enrollment acknowledgements, prewarm cleanup and error handling stay
+intact. A complete physical inventory, exact native inverse and canonical replay
+are required before a transactional write; a matching request string alone is
+insufficient.
+
+The load-gate descriptor prepares an extracted-webview transaction before the
+ordinary webview pass. It qualifies the complete current inline `mC` owner,
+its published native hook callee, stable factory imports and shared atom/gate
+providers. Every physical copy must agree before the transaction writes; a
+marker, partial cohort or changed native call is insufficient. Its exact native
+inverse removes only this load-gate contribution. The remote-connections entry
+and remote-control subview UI transactions accept that precise contribution in
+either order, preserve each other's bytes, and repeat unchanged. Their optional
+feature folders do not depend on one another.
+
+The visibility descriptor prepares all copies of the published predicate,
+state-reading hook and tab selector before one atomic transaction. It proves
+the native catalog-state owner and uses the same feature's load-gate inspector
+and native-hook validator as read-only dependencies. Its transaction never
+applies the load-gate producer's proposed edits. Missing, changed or mixed
+peers, orphan markers and stale dependency rows are rejected before writes.
+
+The actual Remote-mobile visibility adapter and the Remote Control UI adapter
+share exact native, UI-only, mobile-only and joint contribution forms. Their
+registered APIs compose in either order, preserve the other contribution, and
+repeat unchanged. Removing either contribution retains the exact other form;
+removing both restores native visibility bytes while the independent entry and
+load-gate contributions remain intact. Every physical copy follows the same
+state. RMC-only and UI-only feature-source closures load and apply without the
+disabled sibling folder.
+
+The outbound enablement bridge also prepares its complete webview cohort before
+the ordinary webview pass. Its bounded native component, direct parent and
+render slot must resolve to unique factory bindings. The published one-to-one
+gate, native context/Statsig hook result and every mutable `appServices` facade
+copy are read-only dependencies in the same transaction. A bare function or
+nearby log string is insufficient. The existing Linux contribution changes only
+the final enabled value: native hook order, memo caches, loading delay, effect
+dependencies and error reporting stay intact. The effect reads the current
+service through the native getter when it runs; the feature never caches a
+bootstrap-time service, changes pairing/MFA policy, or issues auto-connect calls.
+
+The revoke setup-reset descriptor prepares a complete webview dependency
+transaction before the ordinary webview pass. Its owned callback belongs to the
+local client list: the native local-client atom, local query/snapshot, external
+client filter, successful revoke row and local settings caller must agree. The
+separate host-keyed SSH callback and outbound operations remain native. The
+qualifier leaves unrelated local UI copy outside this contract, so translated
+labels can coexist with the callback change.
+
+After a successful revoke, the callback keeps the native cache update and
+invalidation. Known zero external controllers reset the existing mobile setup
+key to `false`; unknown cache data never resets it. The helper reads the live
+`appServices.applicationState` getter at callback time and uses the native
+await/dispose wrapper for the returned write handle. Missing or failed writers
+remain best-effort and cannot turn a successful revoke into an error. The
+original mutation error, analytics and toast callbacks stay intact. All physical
+provider/facade copies participate as read-only dependencies; partial or modified
+own output must pass exact inverse and canonical replay before a write.
+
+The terminal-status recovery descriptor qualifies its three complete small
+native modules and all physical copies in one transaction. The reducer, list
+and sidebar callers, pending-input resolver, shared atom factory and scope must
+agree. Selected native summary/runtime/request atom publications, host/thread
+keying and the current thread-to-host selector are read-only dependencies. The
+patch preserves current per-host data selection, unread/MCP/approval/async input
+branches and the native reducer's error/owned-work/response priorities. A stale
+`waitingOnUserInput` flag stops implying active input after the matching pending
+request disappears. Direct reducer calls that omit the new pending-request
+parameter retain the established conservative default; no new global selected-
+host state is introduced.
+
+Its String entry requires the complete qualified native cohort. Marker-only,
+partial, mixed-copy or altered output cannot report success: exact inverse and
+canonical replay precede an atomic write. A failed write restores all original
+target bytes, and native provider bytes and file modes stay unchanged.
+
+The status-read guard prepares the complete native host-state owner and its
+published subscription lifecycle before the ordinary webview pass. The native
+classifier chain must still resolve its literal `durable` early skip. The native
+manager keeps a map per host, replaces old connections and tears down their
+subscriptions; the published caller passes the same host, client and current
+predicate to the reader. The initial-snapshot check prevents a late read result
+from replacing a newer notification, and the native abort/disposal path stays
+intact. Every physical owner and read-only lifecycle/provider/facade copy must
+qualify together before the transaction writes.
+
+The reader's own inverse removes only its read guard. It preserves the exact
+canonical Linux wait-window contribution in the same small status module in
+either order. Each wait invocation observes the host supplied by its caller;
+its existing API has only `ignoreCurrentError`, with native settlement and
+timeout behavior. These source contracts do not add a cancellation input or
+change the host manager's ownership rules.
+
+The connection-wait descriptor reuses that complete owner and read-only graph
+before changing the native timeout scalar to 30 seconds for a Linux user agent,
+or keeping 5 seconds otherwise. Initial connected/error results, the exact
+`ignoreCurrentError` identity, watcher settlement and timer/handle cleanup retain
+their native behavior. Its inverse removes only the wait contribution, preserving
+the read guard in either order; running the wait descriptor alone adds no read
+guard. Missing, mixed or damaged physical peers fail before any asset write.
+
 The official webview is an rspack build whose app code lives in lazily loaded
-`webview/assets/async/<id>.<hash>.js` chunks. Webview descriptors select their
-chunks by stable strings (Statsig gate ids, RPC methods, log messages, i18n
-ids), never by file name. Modules that rspack duplicates into several chunks
-(the visibility owner and the host toggle request) are patched in every copy.
+`webview/assets/async/<id>.<hash>.js` chunks. Cohort descriptors qualify their
+current module owners, physical copies and provider/caller dependencies before
+writing. Ordinary webview descriptors select chunks by stable strings (Statsig
+gate ids, RPC methods, log messages, i18n ids), never by file name. Modules that
+rspack duplicates into several chunks (the visibility owner and the host toggle
+request) are patched in every copy.
 Injected helpers are declared inside the owning module factory and reach other
 modules only through that module's own import bindings.
 
@@ -213,6 +396,28 @@ The main RPC boundaries are:
   `setRemoteControlEnabled`, `refreshRemoteControl`, and `setAutoConnect`;
 - shared host routing: `set-experimental-feature-enablement-for-host`
   and `refresh-remote-connections`.
+
+Native auto-connect qualification is a no-op. The live main host must create
+and publish the same persistent handler/service. Settings must call the native
+late `appServices.remoteConnections` getter through its real mutation, guarded
+callback, returned connection lists and both row controls. All selected physical
+copies are checked before the no-op result, including the bootstrap initializer
+and both native facade copies. A main service alone cannot qualify as a Settings
+caller. Critical class methods and fields must have unique native ownership,
+including quoted and computed literal member names. Unknown computed members,
+later service spreads whose keys cannot be proved, service-key overrides and a
+discarded or nonterminal Settings return fail qualification. The native fixed-key
+system-services and visualization spreads retain their bounded producer and
+construction links; unrelated provider implementations remain upstream-owned.
+
+The native handler writes the selected host's boolean before awaiting refresh.
+It retains explicit `false` with `??`, preserves other hosts, and keeps the
+written choice if refresh rejects. Linux adds no retry or rollback policy.
+Finite tests execute only selected native methods, callbacks and expressions
+with controlled dependencies; shared-store reader tests do not establish a real
+process restart, GUI acceptance or live service behavior. Qualification checks
+literal eager binding authority and the bounded native consumers; upstream
+transport and deeper runtime object mutation remain upstream dependencies.
 
 Remote mobile daemon requirement:
 
@@ -319,7 +524,7 @@ Keychain diagnostics:
 Run the feature tests with:
 
 ```bash
-node --test linux-features/remote-mobile-control/test.js
+node --test linux-features/remote-mobile-control/*.test.js linux-features/remote-mobile-control/test.js
 ```
 
 ## Catalog subfeatures
@@ -332,3 +537,12 @@ The community feature catalog lists these user-facing capabilities separately:
 These declarations use `enabledWhen: "parent"`: all are included whenever this
 feature is built. They add no independent configuration switches and do not
 report runtime activation, permissions, external dependencies or backend health.
+
+The per-host enable/disable adapter is prepared as a complete Rspack cohort
+before the ordinary webview pass. Every physical request copy and its native
+client/status/caller dependencies must qualify together; a partial or damaged
+peer is rejected before writes. The adapter preserves the native current-client
+and later-notification race checks, response value and errors. Its only request
+change is `null` to `void 0`. The separate local Desktop `appServices` branch,
+outbound enrollment, permission/MFA policy and native wait lifetime remain
+upstream-owned. A bare `sendRequest` substring is not a supported source contract.
