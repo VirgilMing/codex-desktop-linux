@@ -5,9 +5,24 @@ global shortcuts through the native Wayland GlobalShortcuts portal. The app
 continues to own each action, its availability and its preferred key combination.
 KDE shows descriptive action names when requesting approval.
 
+The five portal actions keep their native Popout ownership, Pet availability,
+Appshots trigger policy, voice lock-screen check and Meetings access, window and
+keymap checks. Pet preference initialization, updates and resets follow the
+native application and desktop-service wiring. Its disposed controller ignores
+later preference synchronization. Region Screenshot and Spotlight retain their native registrations.
+The build validates the complete main-process chunk inventory before committing
+the five action tags together. Repeated builds validate the complete feature
+state, including its native owners and shared portal dependency. Incomplete or
+ambiguous adaptation leaves the input files intact and reports the refusal.
+
 Enable `wayland-global-shortcuts` in `linux-features/features.json` and rebuild.
 Global dictation is independently selected with `global-dictation`; either
 feature can be enabled alone or both can share one helper.
+
+With `appshots` enabled, AppShots owns Linux capture availability and its native
+bare-modifier policy. The Wayland adapter validates that complete contribution
+before tagging the same native callback. Both patch orders and repeated builds
+preserve the combined state.
 
 `make install-native` builds the native helper before packaging. Direct
 `./install.sh` builds require a prebuilt
@@ -23,9 +38,15 @@ commands such as New chat and Quick Chat retain their existing handling.
 The portal may request approval on first registration of an action. Requests are
 queued; later actions wait for the current dialog. Existing action IDs preserve
 system choices across app restarts. Startup waits for account-access discovery
-before binding the initial action set. Once application quit is accepted, the
-backend stops before windows and action owners are disposed. This keeps KDE's
-saved action set stable across ordinary restarts and update exits.
+before binding the initial action set. Accepted native quit preserves its
+pending-turn read and synchronous save attempt, then disables Portal registration
+and initiates helper stop before native window and action-owner cleanup. Both
+will-quit drains join the stop Promise settlement before timeout-bound context
+cleanup and final application disposal. Settlement includes failed stop results.
+The native macOS privacy veto and cancelled confirmation for unsent Git review
+comments keep the backend running. The review check uses the same window context
+as the final context drain. Upstream retains its Windows forced-exit policy. This keeps KDE's saved action set stable across
+ordinary restarts and update exits.
 On KDE, edit actual bindings under
 **System Settings > Keyboard > Shortcuts > ChatGPT Community**. A changed
 preferred combination in the app may leave that saved system binding unchanged.
