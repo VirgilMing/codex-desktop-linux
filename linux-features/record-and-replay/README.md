@@ -72,6 +72,24 @@ rebuilds reuse the packaged artifact and never invoke Cargo.
 - Treats InputCapture/libei and X11 backend entries as readiness/evidence
   providers, not live coordinate macro replay.
 
+## Bundled plugin availability
+
+Enabling this community feature updates the existing native `recordAndReplay`
+registry entry. Linux availability follows the enabled community opt-in and
+retains Linux automatic installation when the bundled plugin is missing. The
+original native availability predicate and imported descriptor fields continue
+to govern other platforms. The feature requires Chronicle / Skysight and uses
+its Linux backend. Computer Use availability and the native Record & Replay
+rollout bit remain independent inputs to their original native consumers.
+
+The plugin gate runs in `extracted-app:pre-webview` at order 150, before the
+Chronicle bridge and Record & Replay bridge. It qualifies the evaluated native
+entry loader, full namespace and descriptor publications, one root registry
+entry and its startup controller across all main chunks. Missing, duplicate,
+partial or mixed factory cohorts leave every asset intact. The shared asset
+transaction verifies writes and rollback. Repeated application verifies the
+complete canonical row.
+
 ## Tester Contract
 
 Use the matrix in [docs/record-and-replay-linux.md](../../docs/record-and-replay-linux.md#tester-acceptance-matrix) for PR verification.
@@ -126,8 +144,41 @@ The Rust helper also exposes MCP tools `skysight_start`,
 `$XDG_RUNTIME_DIR/skysight`; memory resources default to
 `${CODEX_HOME:-$HOME/.codex}/memories/extensions/chronicle/resources`.
 
+The main bridge runs after Chronicle in `extracted-app:pre-webview`, order 152.
+It uses Chronicle's complete native request graph, outer registry and extension
+slot, then verifies the exact Record & Replay helper and literal registration.
+The descriptor inventories all main chunks before writing; missing, duplicate,
+mixed or partial owners, including opaque copies of the same native factory,
+leave the source unchanged. Writes use the shared transaction with verified
+rollback. Enabling this feature does not itself start a recording or Skysight.
+
 All helper invocations use `execFile` with fixed command shapes. The bridge does
-not expose a shell or arbitrary argv surface.
+not expose a shell or arbitrary argv surface. Process results retain `ok`,
+`stdout`, `stderr`, `code` on failure, and parsed `json`; a successful process can
+still return `json.ok: false` for bundle validation or skill inspection.
+`draft-skill` creates a drafting prompt and does not invoke a model.
+
+Recording states are `active`, `stopped`, `canceled`, `expired`, and `idle`;
+these are separate from Skysight's `running`, `paused`, and `stopped` states.
+The three `*-active` actions require both process and JSON success, an `active`
+recording, and a nonblank string session directory before dispatching the next
+command. Invalid status is returned in the diagnostic `status` field.
+
+`record start` records bounded initial/provider evidence without starting the
+continuous Skysight daemon. Native audio defaults off and needs both an explicit
+`includeAudio: true` request and affirmative `CODEX_RECORD_REPLAY_AUDIO`.
+The helper persists a 1,800-second deadline; status, stop, or cancel lazily
+finalizes an expired session, so status may mutate expired recording state.
+Stop and cancel seal evidence and stop only a Skysight daemon owned by that
+exact `recording-session:<id>`; manual continuous capture survives. Starting
+again in an existing session directory or mutating/stopping/canceling sealed
+evidence returns a helper error rather than an idempotent success.
+
+Browser traces use a private `0700` trace directory and exclusively create a
+new `0600` file. Existing filenames and symlinks are preserved. The bridge
+removes only its newly created file after command success, helper failure,
+argument conversion failure, or partial write failure. The runtime root is
+selected from `XDG_RUNTIME_DIR`, then `TMPDIR`, then `/tmp`.
 
 ```bash
 node --test linux-features/record-and-replay/test.js
