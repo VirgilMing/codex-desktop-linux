@@ -305,21 +305,51 @@ Config keys:
 
 ### `modelPicker.showModelsByDefault`
 
-Makes the detailed model list the default Codex composer picker view. The model
-rows are rendered inline, so newly available families such as GPT-5.6 Luna,
-Terra, and Sol remain visible without first switching away from the compact
-Power slider or opening a nested Model submenu. The compact GPT-5.6 Power
-slider also derives Sol's positions from the model's `supportedReasoningEfforts`
-after the app filters that list through the reasoning efforts enabled in
-settings. Enabled efforts such as Max therefore appear without maintaining a
-separate hard-coded effort list. This tweak is disabled by default and must be
-enabled explicitly.
+Makes the detailed model list the default Work and ChatGPT composer picker view.
+The native advanced view renders model rows directly. The compact Work Power
+slider derives positions for every available model from its current
+`supportedReasoningEfforts` and the reasoning efforts enabled in settings.
+Enabled capabilities such as Max appear when supported. The native effort
+predicate, model labels, pair IDs, position indices and minimum of three
+positions remain in use. This tweak is disabled by default and must be enabled
+explicitly.
 
-The current official package redesigned the composer picker: its webview no
-longer contains the `composer-model-picker-menu-view-v1`/`-v2` simple and
-advanced view state or the Power slider's `includeUltraInSlider` effort list
-that this tweak rewrites. When enabled it therefore warns and leaves the
-upstream picker unchanged until it is ported to the new picker.
+The advanced-default descriptor follows the current native Work and ChatGPT
+picker components through their Rspack publications and imports. It changes
+their initial view, close-time reset and ordinary open actions together, so
+closing and reopening the picker keeps the detailed default. Explicit manual
+view toggles and a programmatic `showModelList: false` request retain their
+native behavior. The native view state replaces the retired persisted
+`composer-model-picker-menu-view-v1`/`-v2` keys.
+
+The current native advanced view already renders model options directly in its
+ModelList. The inline-list descriptor audits the published Work and ChatGPT
+renderer chain, the used row map, selection callback, keyboard navigation and
+returned advanced-view menu without writing ASAR assets. A successful first or
+repeat run reports `already-applied`. The relevant current-package factory
+hashes add an ABI guard after those semantic checks. A hash change requires
+re-verifying the native contract before accepting the new package.
+
+The dynamic Power-effort descriptor connects Work's existing enabled-effort
+subscription to its published compact resolver. Each call derives positions
+from the current catalog and enabled set, including after a model change,
+capability refresh or settings change. It preserves input model objects,
+capability arrays and the enabled set. Empty or unsupported capabilities produce
+no positions, and the native `removeXHigh` option still applies.
+
+For this opt-in Work surface, the dynamic catalog takes priority over the native
+remote-configured curated groups. That native input comes through the dynamic
+configuration client's `423260384` value in the qualified source chain. Explicit
+local presets from `model-picker-default-presets` carry
+`codexLinuxDefaultPresets: true` and keep their configured order and priority.
+Their choices are intersected with supported, enabled efforts. The resolver's
+other native callers retain their existing behavior because they omit the new
+enabled-effort option. ChatGPT's separate compact resolver retains its native
+selection policy.
+
+The signed-bundle `model-picker` audit scenario explicitly enables this setting
+and runs all three model-picker descriptors. It covers the advanced default,
+the native inline-list audit and the dynamic Work Power efforts together.
 
 Config keys:
 
@@ -343,6 +373,10 @@ Config keys:
 
 - `enabled`: `true` applies the tweak, `false` keeps the feature enabled but
   uses the upstream translated effort labels.
+
+The descriptor evaluates this setting before locale discovery. Explicit `false`
+records `skipped-disabled`, including when locale files are missing, duplicated
+or renamed. Other enabled UI tweaks continue through their own contracts.
 
 ### `sidebar.projectName`
 
@@ -375,6 +409,10 @@ Config keys:
   syntax that could escape the scoped rule warns and falls back to the default.
   The default is `font-weight: 700 !important;`, so project names are bold
   without changing the fixed row geometry or forcing a color.
+
+With `enabled: false`, the engine records `skipped-disabled` before searching
+for the sidebar owner. Other enabled tweaks continue through their own
+contracts. Style validation runs when this tweak is applied.
 
 ### `selection.moreDetails`
 
@@ -535,10 +573,11 @@ that enabled candidate.
 ## Adding Tweaks
 
 Add each tweak as a focused module under `patches/`, register it from `patch.js`,
-document its JSON settings here, and add coverage in `test.js`.
+document its JSON settings here, and add focused adjacent coverage in
+`*.test.js`. The aggregate `test.js` also covers feature loading and composition.
 
 Run the feature tests with:
 
 ```bash
-node --test linux-features/ui-tweaks/test.js
+node --test linux-features/ui-tweaks/test.js linux-features/ui-tweaks/*.test.js
 ```
