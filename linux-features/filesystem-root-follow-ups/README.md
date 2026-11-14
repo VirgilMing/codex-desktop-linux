@@ -36,14 +36,15 @@ Remove the feature ID and rebuild to disable it; no user data cleanup is needed.
 
 ## Validation and limitations
 
-The patch targets the current signed stable Linux package `26.1029.61003` on
+The patch targets the current signed stable Linux package `26.1103.31037` on
 `amd64` and `arm64`. It has no display-server-specific behavior. A prior local
 workaround was confirmed to restore follow-ups on CachyOS/X11 with Nix and
 package `26.901.51231`; no obsolete package-specific branch is retained here.
 
-The matcher requires one complete guard with the current semantics in each
-renderer chunk that carries it; rspack duplicates the composer module into
-several lazily loaded chunks and every copy is patched. Unknown, ambiguous, or
+The matcher retains the current complete guard and its submission-state /
+follow-up correlation. It proves one semantic Rspack module identity and updates
+every physical copy in one transaction; mixed original/applied or damaged
+replicas leave every asset unchanged. Unknown, ambiguous, or
 partially patched guards remain byte-identical and cause the enabled feature's
 normal build enforcement to reject the candidate. Remove or
 update the feature when upstream fixes or changes this guard.

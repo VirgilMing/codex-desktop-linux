@@ -159,7 +159,7 @@ test("RPM updater selects the distro-specific GnuPG package", () => {
   const rpm = fs.readFileSync(path.join(repoRoot, "packaging/linux/codex-desktop.spec"), "utf8");
   assert.match(
     rpm,
-    /%if __PACKAGE_WITH_UPDATER__\nRequires:\s+polkit, curl, dpkg, nodejs, xdg-utils\n%if 0%\{\?suse_version\}\nRequires:\s+gpg2\n%else\nRequires:\s+gnupg2\n%endif\n%else\nRequires:\s+xdg-utils\n%endif/,
+    /%if __PACKAGE_WITH_UPDATER__\nRequires:\s+polkit, curl, dpkg, npm, xdg-utils\n%if 0%\{\?suse_version\}\nRequires:\s+nodejs >= 22\.12\.0, gpg2\n%else\nRequires:\s+nodejs >= 1:22\.12\.0, gnupg2\n%endif\n%else\nRequires:\s+xdg-utils\n%endif/,
   );
 });
 
@@ -208,8 +208,10 @@ test("Mini packaging retains its helper independently of global shortcuts", (t) 
   assert.equal(fs.readFileSync(retained, "utf8"), "#!/bin/sh\nexit 0\n");
   assert.equal(fs.statSync(retained).mode & 0o777, 0o755);
   const feature = path.join(builder, "linux-features/pet-overlay");
-  for (const relative of ["kwin-helper/src", "kwin-helper/tests", "kwin-helper/Cargo.toml", "kwin-helper/Cargo.lock"])
-    assert.equal(fs.existsSync(path.join(feature, relative)), false, relative);
+  for (const relative of [
+    "kwin-helper/src", "kwin-helper/tests", "kwin-helper/Cargo.toml", "kwin-helper/Cargo.lock",
+    "test.js", "kwin-bridge.test.cjs", "renderer-gesture.test.cjs", "native-kwin.test-helpers.cjs", "fixtures",
+  ]) assert.equal(fs.existsSync(path.join(feature, relative)), false, relative);
   for (const relative of ["patch.js", "native-kwin.cjs", "kwin-bridge.cjs", "kwin-script.cjs", "stage.sh"])
     assert.equal(fs.existsSync(path.join(feature, relative)), true, relative);
 });
@@ -233,6 +235,62 @@ test("Chronicle-only packaging retains the shared backend for updater rebuilds",
   assert.equal(fs.readFileSync(retainedBackend, "utf8"), "#!/bin/sh\nexit 0\n");
   assert.equal(fs.statSync(retainedBackend).mode & 0o777, 0o755);
 });
+
+test("AppShots-only updater retains its private helpers without enabling Computer Use", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-appshots-builder-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const config = path.join(root, "features.json"), app = path.join(root, "app"), builder = path.join(root, "builder");
+  fs.writeFileSync(config, JSON.stringify({ enabled: ["appshots"] }));
+  const helperBytes = Buffer.alloc(20);
+  Buffer.from([127, 69, 76, 70, 2, 1]).copy(helperBytes);
+  helperBytes.writeUInt16LE(62, 18);
+  for (const binary of ["codex-computer-use-linux", "codex-computer-use-cosmic"]) {
+    const source = path.join(app, "resources/native/appshots", binary);
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(source, helperBytes, { mode: 0o755 });
+  }
+  runPackageCommon([
+    `export CODEX_LINUX_FEATURES_CONFIG=${JSON.stringify(config)}`,
+    `stage_update_builder_linux_features_tree ${JSON.stringify(builder)}`,
+    `stage_update_builder_enabled_plugin_templates ${JSON.stringify(builder)}`,
+    `stage_enabled_native_feature_artifacts ${JSON.stringify(builder)}`,
+  ].join("\n"), app);
+  for (const binary of ["codex-computer-use-linux", "codex-computer-use-cosmic"]) {
+    const staged = path.join(builder, "target/release", binary);
+    assert.deepEqual(fs.readFileSync(staged), helperBytes);
+    assert.equal(fs.statSync(staged).mode & 0o777, 0o755);
+  }
+  assert.equal(fs.existsSync(path.join(builder, "linux-features/appshots/stage.sh")), true);
+  for (const relative of ["computer-use-linux", "Cargo.toml", "Cargo.lock", "plugins", "linux-features/computer-use-linux", "target/release/codex-computer-use-indicator"])
+    assert.equal(fs.existsSync(path.join(builder, relative)), false, relative);
+  const rebuilt = path.join(root, "rebuilt");
+  childProcess.execFileSync("bash", [path.join(builder, "linux-features/appshots/stage.sh")], {
+    encoding: "utf8", env: { ...process.env, SCRIPT_DIR: builder, INSTALL_DIR: rebuilt, ARCH: "amd64", CODEX_COMPUTER_USE_BINARY_SOURCE: "", CODEX_COMPUTER_USE_COSMIC_BINARY_SOURCE: "" },
+  });
+  for (const binary of ["codex-computer-use-linux", "codex-computer-use-cosmic"])
+    assert.deepEqual(fs.readFileSync(path.join(rebuilt, "resources/native/appshots", binary)), helperBytes);
+});
+
+for (const enabled of [[], ["appshots"], ["computer-use-linux"], ["appshots", "computer-use-linux"]]) {
+  test(`AppShots native helper build selection: ${enabled.join(",") || "disabled"}`, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-appshots-build-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const config = path.join(root, "features.json"), log = path.join(root, "cargo.log"), bin = path.join(root, "bin");
+    fs.writeFileSync(config, JSON.stringify({ enabled }));
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "cargo"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$APPSHOTS_CARGO_LOG"\n', { mode: 0o755 });
+    childProcess.execFileSync("make", ["--no-print-directory", "build-native-feature-helpers"], {
+      cwd: repoRoot, encoding: "utf8",
+      env: { ...process.env, CODEX_LINUX_FEATURES_CONFIG: config, PATH: `${bin}:${process.env.PATH}`, APPSHOTS_CARGO_LOG: log },
+    });
+    const builds = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
+    assert.equal(builds.length, enabled.length === 0 ? 0 : 1);
+    if (builds.length !== 0) {
+      assert.match(builds[0], /--bin codex-computer-use-linux --bin codex-computer-use-cosmic/);
+      assert.equal(builds[0].includes("--bin codex-computer-use-indicator"), enabled.includes("computer-use-linux"));
+    }
+  });
+}
 
 for (const enabled of [[], ["global-dictation"], ["wayland-global-shortcuts"], ["global-dictation", "wayland-global-shortcuts"]]) {
   test(`shortcut helper packaging and build selection: ${enabled.join(",") || "disabled"}`, (t) => {
@@ -481,8 +539,19 @@ test("update-builder omits test-only files without changing private features or 
   }
   fs.writeFileSync(path.join(features, "features.json"), JSON.stringify({ enabled: ["public-fixture", "private-fixture"] }));
   const trees = ["linux-features/public-fixture", "linux-features/local/private-fixture", "scripts/patches/filter-fixture"];
-  const omitted = ["test.js", "nested/example.test.js", "nested/example.test-helpers.js", "fixtures/input.json", "nested/fixtures/input.json"];
-  const retained = ["patch.js", "nested/runtime.js", "fixtures.json", "nested/tests/runtime.js"];
+  const omitted = [
+    ...["js", "cjs", "mjs"].flatMap(extension => [
+      `test.${extension}`, `nested/example.test.${extension}`,
+      `test-helpers.${extension}`, `nested/example.test-helpers.${extension}`,
+    ]),
+    "fixtures/input.json", "nested/fixtures/input.json",
+  ];
+  const retained = [
+    "patch.js", "nested/runtime.js", "nested/runtime.cjs", "nested/runtime.mjs",
+    "fixtures.json", "nested/tests/runtime.js", "nested/test-runtime.cjs",
+    "contest.js", "nested/foo.test-support.cjs",
+    "nested/example.test.cjs.map", "nested/example.test-helpers.mjs.map",
+  ];
   const original = new Map();
   for (const relative of trees) {
     const dir = path.join(source, relative);
@@ -534,7 +603,11 @@ test("update-builder omits test-only files without changing private features or 
   const inventory = fs.readFileSync(path.join(builder, ".codex-linux/update-builder-manifest.txt"), "utf8").split("\n");
   assert.equal(inventory.includes("linux-features/public-fixture/test.js"), false);
   assert.equal(inventory.includes("linux-features/local/private-fixture/test.js"), true);
-  assert.equal(inventory.includes("scripts/patches/filter-fixture/nested/example.test.js"), false);
+  for (const extension of ["js", "cjs", "mjs"]) {
+    assert.equal(inventory.includes(`linux-features/public-fixture/nested/example.test-helpers.${extension}`), false);
+    assert.equal(inventory.includes(`scripts/patches/filter-fixture/nested/example.test.${extension}`), false);
+    assert.equal(inventory.includes(`linux-features/local/private-fixture/nested/example.test.${extension}`), true);
+  }
 });
 
 const readAloudPluginPath = "resources/plugins/openai-bundled/plugins/read-aloud";

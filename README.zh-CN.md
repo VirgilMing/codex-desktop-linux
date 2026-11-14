@@ -136,7 +136,7 @@ UPSTREAM_DEB=/path/to/chatgpt_<version>_<arch>.deb make build-app
 ### 安装前须知
 
 - 仅支持 OpenAI 最新的已签名 stable Linux 软件包和 `amd64` / `arm64`。
-- 构建需要 Node.js 20+、npm、Python 3、curl、`gpgv`、`dpkg-deb`、tar、
+- 构建需要 Node.js 22.12.0+、npm、Python 3、curl、`gpgv`、`dpkg-deb`、tar、
   make 和 C/C++ 工具链。更新器及启用的原生扩展 helper 还需要 Rust。
   `make bootstrap-native` 会安装或提示这些依赖。
 - 官方 `chatgpt` 与自定义 `codex-desktop` 可以同时安装。默认情况下两者会
@@ -234,8 +234,8 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | Nix flake | 手动构建 | `nix run github:ilysenko/codex-desktop-linux` |
 | 事务式更新管理器 | 原生包 | 除非设置 `PACKAGE_WITH_UPDATER=0` |
 | 官方 Browser 和 Chrome 集成 | 上游提供 | 直接复用官方 Linux 实现，不保留旧移植层 |
-| 可靠的 shell 环境启动 | 始终启用 | 由已验证的上游 runtime 负责；不应用核心 shell 启动补丁 |
-| 可靠地完成已批准的退出 | 上游提供 | 已验证的 runtime 在唯一的 `before-quit` owner 中消费退出批准，使清理流程能够到达 `will-quit` |
+| Linux shell 启动顺序 | 始终启用 | 必要兼容性补丁将 shell loader 延后一个事件循环轮次 |
+| 可靠地完成已批准的退出 | 上游提供 | 已验证的 runtime 在唯一的 `before-quit` owner 中读取退出批准状态，使清理流程能够到达 `will-quit` |
 | Linux 可选扩展框架 | 默认关闭 | 使用 `make setup-native` 配置 |
 | 独立桌面标识 | 始终启用 | **ChatGPT Community**、蓝色 `C` 图标、`codex-desktop` package identity |
 
@@ -249,7 +249,7 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | `agent-workspace` | 隐藏桌面环境中的 agent-workspace 设置和 bridge | [文档](linux-features/agent-workspace/README.md) |
 | `api-key-model-visibility` | 显示 API-key compatible provider 返回的模型 | [文档](linux-features/api-key-model-visibility/README.md) |
 | `api-key-service-tier` | API-key compatible provider 的 Fast/service-tier UI | [文档](linux-features/api-key-service-tier/README.md) |
-| `appshots` | 从 composer 捕获并裁剪当前 Linux 窗口 | [文档](linux-features/appshots/README.md) |
+| `appshots` | 从 composer 捕获并裁剪 Linux 窗口，并独立打包窗口元数据后端 | [文档](linux-features/appshots/README.md) |
 | `authored-message-visibility` | 工具活动折叠后，仍显示助手和用户消息 | [文档](linux-features/authored-message-visibility/README.md) |
 | `authenticated-proxy` | 带用户名和密码的 HTTP proxy | [文档](linux-features/authenticated-proxy/README.md) |
 | `automation-extensions` | 多时间调度和 eager `automation_update` | [文档](linux-features/automation-extensions/README.md) |
@@ -331,9 +331,10 @@ ChatGPT account rollout 和 server-side 功能仍由 OpenAI 控制。重新构�
 Electron 参数，包括需要的 `--proxy-server=...`。ChatGPT 账号初始化完成后，
 Quick Chat 入口才会可用。
 
-`ui-tweaks` 的可选子选项 `tweaks.selection.annotationSubmit.enabled` 默认关闭：
-选中文字后，当前有活动的批注文字编辑器时，Ctrl+Enter 发送批注文字，不被常规输入框拦截。
-详见[批注发送配置](linux-features/ui-tweaks/README.md#selectionannotationsubmit)。
+`ui-tweaks` 的可选子选项 `tweaks.selection.annotationSubmit.enabled` 默认关闭。
+选中文字后，Ctrl+Enter 交由活动的原生批注编辑器按保存／直接提交策略处理当前文字。
+最新原生编辑器默认保存批注，原生状态选择直接提交时保留该路径。
+详见[批注提交配置](linux-features/ui-tweaks/README.md#selectionannotationsubmit)。
 
 ## 配置可选扩展
 

@@ -40,14 +40,6 @@ function featureSyncPattern() {
   return /ambientSuggestions:([A-Za-z_$][\w$]*)&&"enabled"===([A-Za-z_$][\w$]*)\.status/gu;
 }
 
-function appPageEligibilityPattern() {
-  return /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)&&([A-Za-z_$][\w$]*)(?=[,;][\s\S]{0,500}?generatedSuggestionsEnabled:\1[,}])/gu;
-}
-
-function patchedAppPageEligibilityPattern() {
-  return /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)&&\(([A-Za-z_$][\w$]*)\|\|function codexLinuxUiTweaksSuggestedPromptsAppPageEligible\(\)\{return!0\}\(\)\)(?=[,;][\s\S]{0,500}?generatedSuggestionsEnabled:\1[,}])/gu;
-}
-
 function workPageEligibilityPattern() {
   return /generatedSuggestionsEnabled:([A-Za-z_$][\w$]*)&&(\(0,[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\))\(\{authMethod:([A-Za-z_$][\w$]*),email:([A-Za-z_$][\w$]*)\?\.email\?\?([A-Za-z_$][\w$]*),plan:([A-Za-z_$][\w$]*)\}\)/gu;
 }
@@ -149,41 +141,24 @@ function suggestedPromptsFeatureSyncContract(source) {
   return "drifted";
 }
 
-function suggestedPromptsAppPageContract(source) {
-  if (typeof source !== "string") {
-    return "drifted";
-  }
-  const cleanRollouts = [...source.matchAll(gateAssignmentPattern())];
-  const cleanEligibility = [...source.matchAll(appPageEligibilityPattern())];
-  const patchedRollouts = [...source.matchAll(patchedGateAssignmentPattern(RUNTIME_MARKER))];
-  const patchedEligibility = [...source.matchAll(patchedAppPageEligibilityPattern())];
-  if (
-    markerOccurrenceCount(source, RUNTIME_MARKER) === 0 &&
-    markerOccurrenceCount(source, APP_PAGE_ELIGIBILITY_MARKER) === 0 &&
-    cleanRollouts.length === 1 &&
-    cleanEligibility.length === 1 &&
-    cleanEligibility[0][2] === cleanRollouts[0][1]
-  ) {
-    return "current";
-  }
-  if (
-    markerOccurrenceCount(source, RUNTIME_MARKER) === 1 &&
-    completeMarkerCount(source, RUNTIME_MARKER) === 1 &&
-    markerOccurrenceCount(source, APP_PAGE_ELIGIBILITY_MARKER) === 1 &&
-    completeMarkerCount(source, APP_PAGE_ELIGIBILITY_MARKER) === 1 &&
-    cleanRollouts.length === 0 &&
-    cleanEligibility.length === 0 &&
-    patchedRollouts.length === 1 &&
-    patchedEligibility.length === 1 &&
-    patchedEligibility[0][2] === patchedRollouts[0][1] &&
-    completePatchedGateCount(source, RUNTIME_MARKER) === 1
-  ) {
-    return "patched";
-  }
+function appPageState(source, info) {
+  if (!info) return "drifted";
+  if (markerOccurrenceCount(source, RUNTIME_MARKER) === 0 &&
+      markerOccurrenceCount(source, APP_PAGE_ELIGIBILITY_MARKER) === 0 &&
+      !info.rolloutSite.patched && !info.eligibility.patched) return "current";
+  if (markerOccurrenceCount(source, RUNTIME_MARKER) === 1 && completeMarkerCount(source, RUNTIME_MARKER) === 1 &&
+      markerOccurrenceCount(source, APP_PAGE_ELIGIBILITY_MARKER) === 1 && completeMarkerCount(source, APP_PAGE_ELIGIBILITY_MARKER) === 1 &&
+      info.rolloutSite.patched && info.eligibility.patched &&
+      completePatchedGateCount(info.rolloutSite.source, RUNTIME_MARKER) === 1) return "patched";
   return "drifted";
 }
 
-function suggestedPromptsWorkPageContract(source) {
+function suggestedPromptsAppPageContract(source,snapshot) {
+  if (typeof source !== "string") return "drifted";
+  return appPageState(source, require("./suggested-prompts-app-page.js").inspectPage(source,snapshot));
+}
+
+function suggestedPromptsWorkPageContract(source,snapshot) {
   if (typeof source !== "string") {
     return "drifted";
   }
@@ -198,7 +173,7 @@ function suggestedPromptsWorkPageContract(source) {
     cleanEligibility.length === 1 &&
     cleanEligibility[0][1] === cleanRollouts[0][1]
   ) {
-    return "current";
+    return require("./suggested-prompts-work-page.js").inspectPage(source,snapshot) ? "current" : "drifted";
   }
   if (
     markerOccurrenceCount(source, RUNTIME_MARKER) === 1 &&
@@ -212,7 +187,7 @@ function suggestedPromptsWorkPageContract(source) {
     patchedEligibility[0][1] === patchedRollouts[0][1] &&
     completePatchedGateCount(source, RUNTIME_MARKER) === 1
   ) {
-    return "patched";
+    return require("./suggested-prompts-work-page.js").inspectPage(source,snapshot) ? "patched" : "drifted";
   }
   return "drifted";
 }
@@ -309,33 +284,34 @@ function applySuggestedPromptsFeatureSyncPatch(source) {
   }
 }
 
-function applySuggestedPromptsAppPagePatch(source) {
+function applySuggestedPromptsAppPagePatch(source,snapshot) {
   try {
-    const contract = suggestedPromptsAppPageContract(source);
-    if (contract === "patched") {
-      return source;
+    if (typeof source !== "string") return source;
+    const info = require("./suggested-prompts-app-page.js").inspectPage(source,snapshot);
+    const state = appPageState(source, info);
+    if (state === "patched") return source;
+    if (state !== "current") { warn("app page"); return source; }
+    const offset = source.includes("__webpack_modules__") ? info.module.start : 0;
+    const edits = [
+      { ...info.rolloutSite, replacement: replaceRolloutGate(info.rolloutSite.source, RUNTIME_MARKER) },
+      { ...info.eligibility, replacement: `${info.fields.generatedSuggestionsEnabled}=${info.rollout}&&(${info.account}||function ${APP_PAGE_ELIGIBILITY_MARKER}(){return!0}())` },
+    ].sort((a,b) => b.start-a.start);
+    let patched = source;
+    for (const edit of edits) {
+      const start=offset+edit.start,end=offset+edit.end;
+      if (source.slice(start,end)!==edit.source) throw new Error("Ordinary Home source range changed");
+      patched=patched.slice(0,start)+edit.replacement+patched.slice(end);
     }
-    if (contract !== "current") {
-      warn("app page");
-      return source;
-    }
-
-    return replaceRolloutGate(source, RUNTIME_MARKER).replace(
-      appPageEligibilityPattern(),
-      (_match, enabledName, rolloutName, eligibilityName) =>
-        `${enabledName}=${rolloutName}&&(${eligibilityName}||function ${APP_PAGE_ELIGIBILITY_MARKER}(){return!0}())`,
-    );
+    return patched;
   } catch (error) {
-    console.warn(
-      `WARN: Unexpected Suggested Prompts app page patch error: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    console.warn(`WARN: Unexpected Suggested Prompts app page patch error: ${error instanceof Error ? error.message : String(error)}`);
     return source;
   }
 }
 
-function applySuggestedPromptsWorkPagePatch(source) {
+function applySuggestedPromptsWorkPagePatch(source,snapshot) {
   try {
-    const contract = suggestedPromptsWorkPageContract(source);
+    const contract = suggestedPromptsWorkPageContract(source,snapshot);
     if (contract === "patched") {
       return source;
     }
@@ -471,7 +447,7 @@ const descriptors = [
   },
   {
     id: "home-suggested-prompts-app-page",
-    phase: "webview-asset",
+    phase: "extracted-app:pre-webview",
     order: 20_980,
     ciPolicy: "optional",
     enabled: suggestedPromptsEnabled,
@@ -479,11 +455,11 @@ const descriptors = [
     assetMatch: (source) => suggestedPromptsAppPageContract(source) !== "drifted",
     missingDescription: "current Suggested Prompts app page bundle",
     skipDescription: "ui-tweaks Suggested Prompts app page patch",
-    apply: applySuggestedPromptsAppPagePatch,
+    apply: (extractedDir) => require("./suggested-prompts-app-page.js").applyToExtractedApp(extractedDir),
   },
   {
     id: "home-suggested-prompts-work-page",
-    phase: "webview-asset",
+    phase: "extracted-app:pre-webview",
     order: 20_985,
     ciPolicy: "optional",
     enabled: suggestedPromptsEnabled,
@@ -491,7 +467,7 @@ const descriptors = [
     assetMatch: (source) => suggestedPromptsWorkPageContract(source) !== "drifted",
     missingDescription: "current Suggested Prompts Work Home bundle",
     skipDescription: "ui-tweaks Suggested Prompts Work Home patch",
-    apply: applySuggestedPromptsWorkPagePatch,
+    apply: (extractedDir) => require("./suggested-prompts-work-page.js").applyToExtractedApp(extractedDir),
   },
   {
     id: "home-suggested-prompts-settings-row",

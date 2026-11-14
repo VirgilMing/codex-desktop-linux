@@ -1,10 +1,10 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { execFileSync } = require("node:child_process");
 
 const repoRoot = path.resolve(__dirname, "../..");
 
@@ -26,16 +26,20 @@ function job(workflow, jobName) {
 function trackedTestFiles() {
   return execFileSync("git", ["ls-files"], { cwd: repoRoot, encoding: "utf8" })
     .split("\n")
-    .filter((file) => /(^|\/)test\.js$|\.test\.js$/.test(file))
+    .filter((file) => /(^|\/)test\.(?:c|m)?js$|\.test\.(?:c|m)?js$/.test(file))
     .sort();
 }
 
 // The files scripts/ci/run-node-checks.sh runs.
 function guardedTestFiles() {
   const runner = read("scripts/ci/run-node-checks.sh");
-  const match = runner.match(/git ls-files ((?:'[^']*test\.js' ?)+)\)/);
-  assert.ok(match, "run-node-checks.sh lists its test files with git ls-files");
-  const pathspecs = match[1].trim().split(/\s+/).map((spec) => spec.slice(1, -1));
+  const tests = /^run_node_tests\(\) \{([\s\S]*?)^\}/m.exec(runner);
+  assert.ok(tests, "run-node-checks.sh defines the guarded Node test function");
+  const match = tests[1].match(/git ls-files([\s\S]*?)\)/);
+  assert.ok(match, "run_node_tests lists its test files with git ls-files");
+  const pathspecs = [...match[1].matchAll(/'([^']+)'/g)].map((entry) => entry[1]);
+  assert.ok(pathspecs.length > 0);
+  assert.match(match[1].replace(/'[^']+'/g, ""), /^[\s\\]*$/);
   return execFileSync("git", ["ls-files", ...pathspecs], { cwd: repoRoot, encoding: "utf8" })
     .split("\n")
     .filter(Boolean)
@@ -52,6 +56,8 @@ test("CI runs every Node test through the TMPDIR guard", () => {
 test("CI runs the complete workflow regression suite", () => {
   const workflow = read(".github/workflows/ci.yml");
   assert.ok(guardedTestFiles().includes("scripts/ci/github-actions-workflows.test.js"));
+  // node-runner.test.js also executes the actual runner against tracked
+  // fixtures, verifying discovery and execution of nested test basenames.
   const nixBuild = job(workflow, "nix-build");
   assert.match(nixBuild, /system: x86_64-linux/);
   assert.match(nixBuild, /system: aarch64-linux/);
@@ -85,6 +91,28 @@ test("normal CI and container smoke run local package verification policy regres
     `the container smoke entrypoint must execute ${suite}`);
   const core = read("scripts/ci/container-entrypoint.sh").split("run_core() {", 2)[1].split("\n}", 1)[0];
   assert.match(core, /bash tests\/scripts_smoke\.sh/);
+  assert.match(core, /bash scripts\/ci\/run-node-checks\.sh tests/);
+});
+
+test("local apt CI uses the shared Node 24 bootstrap before installing only CI extras", () => {
+  assert.match(job(read(".github/workflows/ci.yml"), "source-and-node"), /node-version: 24/);
+  const install = /^install_apt\(\) \{[\s\S]*?^\}/m.exec(read("scripts/ci/container-entrypoint.sh"));
+  assert.ok(install, "local apt CI dependency function must exist");
+  // Run the real function with command stubs: no installer, apt or network
+  // operation executes, and a spaced repository path verifies argument quoting.
+  const output = execFileSync("bash", ["-c", `
+set -euo pipefail
+REPO_DIR='/ci repository'
+bash() { printf 'bootstrap\\n%s\\n%s\\n%s\\n' "$NODEJS_MAJOR" "$#" "$1"; }
+apt-get() { printf 'apt\\n%s\\n' "$DEBIAN_FRONTEND"; printf '%s\\n' "$@"; }
+${install[0]}
+install_apt
+`], { encoding: "utf8" });
+  assert.deepEqual(output.trim().split("\n"), [
+    "bootstrap", "24", "1", "/ci repository/scripts/install-deps.sh",
+    "apt", "noninteractive", "install", "-y", "--no-install-recommends",
+    "dbus", "ripgrep", "sudo",
+  ]);
 });
 
 test("official Linux validation runs fully on every pull request but not hourly", () => {

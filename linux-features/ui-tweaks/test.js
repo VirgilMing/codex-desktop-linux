@@ -8,11 +8,14 @@ const path = require("node:path");
 const test = require("node:test");
 
 require("./suggested-prompts.test.js");
+require("./suggested-prompts-app-page.test.js");
+require("./suggested-prompts-work-page.test.js");
 require("./dock-icon.test.js");
 require("./gentoo-support.test.js");
 require("./custom-font-input.test.js");
 require("./selected-text-more-details.test.js");
 require("./selected-text-annotation-submit.test.js");
+require("./reasoning-effort-labels.test.js");
 
 const {
   discoverLinuxFeatureManifests,
@@ -143,16 +146,17 @@ function simplifiedChineseLocaleFixture() {
     "composer.mode.local.reasoning.xhigh.label": "极高",
     "composer.mode.local.reasoning.max.label": "最高",
     "composer.mode.local.reasoning.ultra.label": "极高",
+    "composer.mode.local.reasoning.persistent.label": "持续",
   };
   const members = Object.entries(labels)
     .map(([key, value]) => `"${key}":"${value}"`)
     .join(",");
-  return "export const __rspack_esm_id=216360;export const __rspack_esm_ids=[216360];" +
+  return "export const __rspack_esm_ids=[216360];" +
     `export const __webpack_modules__={wrpI(e){e.exports=JSON.parse('{"/+SIoK":"升级至 Plus",${members},"zaMBO4":"升级"}')}};`;
 }
 
 function localeLoaderFixture(entries) {
-  return "export const __rspack_esm_id=496175;export const __rspack_esm_ids=[496175];" +
+  return "export const __rspack_esm_ids=[496175];" +
     "export const __webpack_modules__={abcd(e,t,i){let n={" +
     entries.map(([locale, chunk, moduleId]) =>
       `"../locales/${locale}.json":function(){return i.e(${chunk}).then(i.t.bind(i,"${moduleId}",19))}`).join(",") +
@@ -328,8 +332,8 @@ test("ui-tweaks is discoverable and disabled until listed in features.json", () 
         ["feature:ui-tweaks:appearance-dock-icon-settings-row", "webview-asset", "optional"],
         ["feature:ui-tweaks:home-suggested-prompts-main-process", "main-bundle", "optional"],
         ["feature:ui-tweaks:home-suggested-prompts-feature-sync", "webview-asset", "optional"],
-        ["feature:ui-tweaks:home-suggested-prompts-app-page", "webview-asset", "optional"],
-        ["feature:ui-tweaks:home-suggested-prompts-work-page", "webview-asset", "optional"],
+        ["feature:ui-tweaks:home-suggested-prompts-app-page", "extracted-app:pre-webview", "optional"],
+        ["feature:ui-tweaks:home-suggested-prompts-work-page", "extracted-app:pre-webview", "optional"],
         ["feature:ui-tweaks:home-suggested-prompts-settings-row", "webview-asset", "optional"],
         ["feature:ui-tweaks:home-suggested-prompts-content", "webview-asset", "optional"],
         ["feature:ui-tweaks:appearance-custom-font-input", "webview-asset", "optional"],

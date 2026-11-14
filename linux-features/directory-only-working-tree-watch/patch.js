@@ -12,6 +12,8 @@ const {
   isPatchIntegrityError,
 } = require("../../scripts/patches/integrity-error.js");
 
+const { normalizeLinuxTargetArchitecture } = require("../../scripts/lib/linux-target-context.js");
+
 const bufferEquals = Function.call.bind(Buffer.prototype.equals);
 
 function readTrustedBytes(readFileSync, filePath) {
@@ -156,9 +158,8 @@ const CURRENT_GIT_ROUTE_PREFIX_PATTERN =
   `(?<ignoreSource>${IDENTIFIER_PATTERN})=${IDENTIFIER_PATTERN}\\(\\),` +
   `(?<localHost>${IDENTIFIER_PATTERN})=new ` +
   `(?<localHostClass>${IDENTIFIER_PATTERN})\\(\\k<ignoreSource>,[\\s\\S]{0,600}?\\);` +
-  // The current package exposes the ignore sources lazily and opts the repo
-  // watcher into ignored-directory pruning; the Git ignore environment reader
-  // is inlined by the current minifier.
+  // The current package exposes ignore sources lazily with platform-specific
+  // pruning modes. Its Git ignore environment reader is inlined.
   "return\\{git:\\{getWatchIgnoreSources:\\k<ignoreSource>\\?void 0:\\(\\)=>\\(\\{" +
   `getEnvironment:async\\(\\)=>[\\s\\S]{1,2000}?,getWatchTargets:${IDENTIFIER_PATTERN},` +
   'pruneIgnoredDirectories:"darwin"===process\\.platform\\?"observed":"all"\\}\\),' +
@@ -1930,12 +1931,13 @@ function patchWorker(extractedDir, context = {}, io = {}) {
   };
 }
 
-function stageWatchbound(extractedDir) {
+function stageWatchbound(extractedDir, context) {
+  const architecture = normalizeLinuxTargetArchitecture(context?.linux?.arch ?? context?.linuxTarget?.arch);
   const helper = path.join(__dirname, "watchbound-package.js");
   try {
     const output = childProcess.execFileSync(
       process.execPath,
-      [helper, "--stage", extractedDir],
+      [helper, "--stage", extractedDir, architecture],
       {
         encoding: "utf8",
         env: process.env,

@@ -8,7 +8,15 @@ fail() { echo "[smoke][ERROR] $*" >&2; exit 1; }
 assert_file() { [ -f "$1" ] || fail "missing file: $1"; }
 assert_executable() { [ -x "$1" ] || fail "not executable: $1"; }
 assert_contains() { rg -q -- "$2" "$1" || fail "$1 does not contain $2"; }
-assert_absent() { ! rg -q -- "$2" "$1" || fail "$1 unexpectedly contains $2"; }
+assert_absent() {
+    local status
+    if rg -q "${@:3}" -- "$2" "$1"; then
+        fail "$1 unexpectedly contains $2"
+    else
+        status=$?
+        [ "$status" -eq 1 ] || fail "rg failed with status $status while checking $1"
+    fi
+}
 
 assert_executable install.sh
 assert_executable scripts/rebuild-candidate.sh
@@ -143,7 +151,7 @@ assert_contains scripts/lib/asar-patch.sh 'list --is-pack "\$app_asar" > "\$WORK
 assert_contains scripts/lib/asar-patch.sh 'scripts/patches/lib/asar-layout.js'
 assert_contains scripts/lib/asar-patch.sh 'scripts/patches/lib/asar-layout.js" verify'
 assert_absent scripts/lib/asar-patch.sh 'cmp -s "\$WORK_DIR/app.asar.upstream-layout" "\$WORK_DIR/app.asar.output-layout"'
-assert_absent scripts/lib/asar-patch.sh "find . -type f -printf '%P\\n' | LC_ALL=C sort"
+assert_absent scripts/lib/asar-patch.sh "find . -type f -printf '%P\\n' | LC_ALL=C sort" --fixed-strings
 
 selector_fixture="$(mktemp -d)"
 trap 'rm -rf -- "$selector_fixture"' EXIT
@@ -189,7 +197,7 @@ cat > "$asar_stub_dir/npx" <<'STUB'
 #!/bin/sh
 while [ $# -gt 0 ]; do
     case "$1" in
-        --yes|--package=@electron/asar) shift ;;
+        --yes|--package=@electron/asar@4.3.1) shift ;;
         --) shift; break ;;
         *) break ;;
     esac
@@ -215,7 +223,10 @@ NODE
 node - <<'NODE'
 const { corePatchDescriptors } = require("./scripts/patches/runner.js");
 const descriptors = corePatchDescriptors();
-if (descriptors.length !== 0) {
+if (descriptors.length !== 1 ||
+    descriptors[0].id !== "shell-env-startup" ||
+    descriptors[0].ciPolicy !== "required-upstream" ||
+    descriptors[0].phase !== "extracted-app:pre-webview") {
   throw new Error(`Unexpected default core patch registry: ${descriptors.map(({ id }) => id).join(", ")}`);
 }
 NODE
@@ -248,6 +259,7 @@ node --test launcher/start.test.js tests/deb-prerm.test.js scripts/lib/upstream-
   scripts/patches/lib/asar-layout.test.js \
   scripts/patches/lib/global-shortcuts-portal.test.js \
   scripts/patches/lib/minified-js.test.js scripts/patches/lib/assets.test.js \
+  scripts/patches/lib/rspack-module-assets.test.js \
   scripts/patches/core/*/test.js \
   scripts/lib/linux-features.test.js
 

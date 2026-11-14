@@ -11,7 +11,7 @@ const { normalizePatchDescriptors, applyWebviewAssetPatchDescriptors } = require
 const { createPatchReport } = require("../../scripts/lib/patch-report.js");
 const { STORAGE_KEY, applySidebarHistoryPatch, matchesSidebarHistoryContract, descriptors } = require("./patch.js");
 
-// Reduced rspack chunk shaped like the signed stable Linux 26.1029 webview:
+// Reduced rspack chunk shaped like the latest signed stable Linux webview:
 // the preference module declares the persisted sidebar settings and the
 // in-memory source atom; the sidebar module requires it and reads that atom
 // only for the ChatGPT product. Other state and the Codex branch stay intact.
@@ -20,7 +20,7 @@ const PREFERENCES = 'RFDv(e,t,n){var r=n("ATOM"),u=n("SCOP"),f=n("PERS");' +
   'R=(0,r.vP)(u.u,"all"),S=(0,r.vP)(u.u,"all");n.d(t,{},{MT:g,uM:R,vv:O,xx:S})}';
 const SIDEBAR = 'sHm2(e,t,n){var C=n("SCOP"),M=n("RFDv");' +
   'function o(e,t){let l="chatgpt"===e?t(M.uM):"codex";return l}n.d(t,{select:()=>o})}';
-const chunk = (...modules) => "export const __rspack_esm_id=24191;export const __rspack_esm_ids=[24191];" +
+const chunk = (...modules) => "export const __rspack_esm_ids=[24191];" +
   `export const __webpack_modules__={${modules.join(",")}};`;
 const CURRENT = chunk(PREFERENCES, SIDEBAR);
 
@@ -128,6 +128,25 @@ test("missing, ambiguous, drifted, and partly patched contracts fail closed", ()
   } finally { console.warn = original; }
 });
 
+test("the preference atom must belong to the actual producer export record", () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    for (const source of [
+      CURRENT.replace('n.d(t,{},{MT:g,uM:R,vv:O,xx:S})', 'const decoy={MT:g,uM:R,vv:O,xx:S}'),
+      CURRENT.replace('n.d(t,{},{MT:g,uM:R,vv:O,xx:S})', 'n.d(other,{},{MT:g,uM:R,vv:O,xx:S})'),
+      CURRENT.replace('n.d(t,{},{MT:g,uM:R,vv:O,xx:S})', 'other.d(t,{},{MT:g,uM:R,vv:O,xx:S})'),
+      CURRENT.replace('uM:R', 'uM:R,uM:S'),
+    ]) {
+      assert.equal(matchesSidebarHistoryContract(source), false);
+      assert.equal(applySidebarHistoryPatch(source), source);
+    }
+    const getters = CURRENT.replace('n.d(t,{},{MT:g,uM:R,vv:O,xx:S})', 'n.d(t,{MT:()=>g,uM:()=>R,vv:()=>O,xx:()=>S})');
+    assert.equal(matchesSidebarHistoryContract(getters), true);
+    assert.notEqual(applySidebarHistoryPatch(getters), getters);
+  } finally { console.warn = warn; }
+});
+
 test("feature is opt-in and the descriptor selects one semantic rspack chunk", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "separate-chatgpt-sidebar-"));
   const previous = process.env.CODEX_LINUX_FEATURES_CONFIG;
@@ -167,4 +186,21 @@ test("the signed official webview has one patchable sidebar source contract", { 
   const patched = applySidebarHistoryPatch(matching[0]);
   assert.notEqual(patched, matching[0]);
   assert.equal(applySidebarHistoryPatch(patched), patched);
+});
+
+
+test("mixed export records keep the source atom despite unrelated current inline functions", () => {
+  const source = CURRENT.replace("MT:g,uM:R", "inline:function(e){return {value:e}},MT:g,uM:R");
+  const patched = applySidebarHistoryPatch(source);
+  assert.notEqual(patched, source);
+  assert.equal(applySidebarHistoryPatch(patched), patched);
+  const loaded = load(patched);
+  assert.equal(loaded.select("chatgpt", atom => atom.value), "chatgpt");
+  assert.equal(loaded.select("codex", atom => atom.value), "codex");
+  for (const damaged of [
+    source.replace("inline:function(e)", "inline:function(n)" ).replace("return {value:e}", "n={d(){}};return {value:n}"),
+  ]) {
+    // A local function parameter is unrelated to the producer's require binding.
+    assert.equal(matchesSidebarHistoryContract(damaged), true);
+  }
 });

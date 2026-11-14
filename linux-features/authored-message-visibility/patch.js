@@ -1,86 +1,64 @@
 "use strict";
 
-const { escapeRegExp, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
+const path = require("node:path");
+const { findUniqueRspackModuleCopies, patchRspackModuleCopies } = require("../../scripts/patches/lib/rspack-module-assets.js");
 
-// Complete activity classifier from the current signed rspack/SWC package.
-// The bundler inlines the classifier into the partition loop as a function
-// expression, so the contract is bound by its destructured options and guard
-// and then checked as one complete function body. Every local alias is
-// captured; the upstream tool exceptions must stay intact.
-const identifier = String.raw`[A-Za-z_$][\w$]*`;
-const call = String.raw`(?:\(0,${identifier}\.${identifier}\)|${identifier})`;
-const classifierHead = new RegExp(
-  String.raw`function(?: ${identifier})?\(\{unit:(?<unit>${identifier}),hasFollowingFinalAnswer:(?<following>${identifier}),` +
-    String.raw`keepMcpAppEntriesPersistent:(?<keep>${identifier}),mcpServerStatuses:(?<statuses>${identifier}),` +
-    String.raw`renderMcpApps:(?<render>${identifier})\}\)\{` +
-    String.raw`if\("standalone"!==\k<unit>\.kind\)return!1;let (?<item>${identifier})=\k<unit>\.item\.item;return`,
-  "g",
-);
+const { inspectActivityPartition } = require("../../scripts/patches/lib/activity-partition.js");
+const ACTIVITY_NEEDLES = ["collapsibleUnits:", "persistentUnits:", "keepMcpAppEntriesPersistent:"];
+const MARKER = "/*codex-linux-authored-message-visibility*/";
 const recovery = "Disable authored-message-visibility and rebuild, or update its patch for the current official package.";
 
-function classifierShape(source, match) {
-  const open = match.index + match[0].indexOf("){if(") + 1;
-  const end = findMatchingBrace(source, open);
-  if (end < 0) return null;
-  const body = source.slice(match.index, end + 1);
-  const { item, following, keep, render, statuses } = match.groups;
-  const i = escapeRegExp(item);
-  // Upstream-owned exceptions that must survive unchanged in both states.
-  const tools = [
-    `"user-input-response"===${item}.type?!${item}.completed:`,
-    `"dynamic-tool-call"===${item}.type&&`,
-    `${keep}&&${render}&&"mcp-tool-call"===${item}.type&&`,
-    `mcpServerStatuses:${statuses}}))`,
-  ];
-  const assistant = new RegExp(
-    String.raw`"assistant-message"===${i}\.type\?(?<patched>!0\|\|)?${call}\(${i}\):!!\(`,
-    "g",
-  );
-  if (!tools.every((part) => body.split(part).length === 2) ||
-      !new RegExp(String.raw`"mcp-tool-call"===${i}\.type&&${call}\(${i}\)`).test(body)) {
-    return null;
+function classifierShape(source) {
+  const owner = inspectActivityPartition(source);
+  if (!owner.ok) return owner;
+  const prefix = `${MARKER}"assistant-message"===${owner.names.item}.type||"user-message"===${owner.names.item}.type||(`;
+  const expression = owner.expression.source;
+  const patched = expression === prefix + owner.nativeExpression.source + ")";
+  if (source.split(MARKER).length - 1 !== Number(patched) ||
+      !patched && expression !== owner.nativeExpression.source) {
+    return { ok: false, reason: "incomplete authored message expression", candidateCount: 1 };
   }
-  const assistants = [...body.matchAll(assistant)];
-  const user = `||"user-message"===${item}.type&&("pending"===${item}.steeringStatus||!0===${item}.followsInterruptedFinalAnswer||` +
-    `"accepted"===${item}.steeringStatus&&null==${item}.questionReplies&&null==${item}.codexDelegation&&!${item}.isToolOutput&&!${item}.isHistoricalSteering||` +
-    `!0===${item}.wasInHistoryPreview||"not-sent"===${item}.deliveryStatus||!0===${item}.hookFeedback||!${following})}`;
-  const currentUser = user.slice(0, -1) + ")}";
-  const userPatched = `||"user-message"===${item}.type${currentUser}`;
-  const original = assistants.length === 1 && assistants[0].groups.patched == null && body.endsWith(currentUser);
-  const patched = assistants.length === 1 && assistants[0].groups.patched != null && body.endsWith(userPatched);
-  if (!original && !patched) return null;
-  return { start: match.index, body, item, original, assistant: assistants[0], user: currentUser, userPatched };
+  return { ...owner, prefix, patched };
 }
 
 function applyAuthoredMessageVisibilityPatch(source) {
-  const shapes = [...source.matchAll(classifierHead)].map((match) => classifierShape(source, match));
-  const current = shapes.filter((shape) => shape?.original);
-  const patched = shapes.filter((shape) => shape != null && !shape.original);
-  if (shapes.length === 1 && patched.length === 1) return source;
-  if (shapes.length !== 1 || current.length !== 1) {
-    console.warn(`WARN: authored-message-visibility: expected one complete activity classifier, found ${current.length} original and ${patched.length} patched of ${shapes.length}. ${recovery}`);
+  const shape = classifierShape(source);
+  if (!shape.ok) {
+    console.warn(`WARN: authored-message-visibility: expected one complete activity classifier, found 0 complete of ${shape.candidateCount}: ${shape.reason}. ${recovery}`);
     return source;
   }
-  const [{ start, body, assistant, user, userPatched }] = current;
-  const replacement = body
-    .slice(0, assistant.index + assistant[0].indexOf("?") + 1) + "!0||" +
-    body.slice(assistant.index + assistant[0].indexOf("?") + 1);
-  const patchedBody = replacement
-    .slice(0, -user.length) + userPatched;
-  return source.slice(0, start) + patchedBody + source.slice(start + body.length);
+  if (shape.patched) return source;
+  // Keep the complete native MCP-rendering and steering prerequisites.
+  // The feature's existing authored-message types override that expression.
+  return source.slice(0, shape.expression.start) + shape.prefix + shape.nativeExpression.source + ")" + source.slice(shape.expression.end);
+}
+
+function patchAuthoredMessageAssets(extractedDir) {
+  const assets = path.join(extractedDir, "webview", "assets");
+  const ownsActivity = source => ACTIVITY_NEEDLES.every(needle => source.includes(needle));
+  const copies = findUniqueRspackModuleCopies(assets, {
+    matchModule: ownsActivity,
+    sourceMatch: ownsActivity,
+    description: "authored message activity partition",
+  });
+  return patchRspackModuleCopies(assets, copies, source => {
+    if (!ownsActivity(source) || !classifierShape(source).ok) {
+      throw new Error("Incomplete authored message activity owner");
+    }
+    return applyAuthoredMessageVisibilityPatch(source);
+  });
 }
 
 module.exports = {
   applyAuthoredMessageVisibilityPatch,
+  patchAuthoredMessageAssets,
   descriptors: [{
     id: "persistent-messages",
-    phase: "webview-asset",
+    phase: "extracted-app:pre-webview",
     order: 20_740,
     ciPolicy: "optional",
-    // Content-addressed: every chunk that carries the activity partition
-    // module is patched, because rspack can duplicate a module across chunks.
-    assetNeedles: ["collapsibleUnits:", "persistentUnits:", "keepMcpAppEntriesPersistent:"],
+    assetNeedles: ACTIVITY_NEEDLES,
     missingWarning: `WARN: authored-message-visibility: activity partition bundle missing. ${recovery}`,
-    apply: applyAuthoredMessageVisibilityPatch,
+    apply: patchAuthoredMessageAssets,
   }],
 };

@@ -152,7 +152,7 @@ Old `.dmg`, `DMG=`, and `CODEX_DMG_*` inputs are intentionally unsupported.
 
 - Only the latest signed stable OpenAI Linux package is supported, on `amd64`
   and `arm64`.
-- Build tools require Node.js 20 or newer, npm, Python 3, curl, `gpgv`,
+- Build tools require Node.js 22.12.0 or newer, npm, Python 3, curl, `gpgv`,
   `dpkg-deb`, tar, make, and a C/C++ toolchain. Rust is used for the updater and
   enabled native feature helpers. `make bootstrap-native` installs or guides
   you through these requirements.
@@ -260,8 +260,8 @@ state.
 | Nix flake | Manual build | `nix run github:ilysenko/codex-desktop-linux` |
 | Transactional update manager | Native packages | Included unless built with `PACKAGE_WITH_UPDATER=0` |
 | Official Browser and Chrome integrations | Upstream | Reused from the official Linux package; no legacy port layer |
-| Reliable shell environment startup | Always | Owned by the verified upstream runtime; no core shell-startup patch is applied |
-| Reliable approved quit completion | Upstream | The verified runtime consumes quit approval in its unique `before-quit` owner so teardown reaches `will-quit` |
+| Linux shell startup ordering | Always | Required compatibility patch defers the shell loader by one event-loop turn |
+| Reliable approved quit completion | Upstream | The verified runtime checks quit approval state in its unique `before-quit` owner so teardown reaches `will-quit` |
 | Optional Linux feature framework | Disabled | Configure with `make setup-native` |
 | Distinct desktop identity | Always | **ChatGPT Community**, blue `C` icon, `codex-desktop` package identity |
 
@@ -276,7 +276,7 @@ requirements, known limitations, configuration, and tests.
 | `agent-workspace` | Agent-workspace settings and bridge for hidden desktop environments | [Docs](linux-features/agent-workspace/README.md) |
 | `api-key-model-visibility` | Show models reported by API-key authenticated compatible providers | [Docs](linux-features/api-key-model-visibility/README.md) |
 | `api-key-service-tier` | Fast/service-tier UI for API-key authenticated compatible providers | [Docs](linux-features/api-key-service-tier/README.md) |
-| `appshots` | Capture and crop the focused Linux window from the composer | [Docs](linux-features/appshots/README.md) |
+| `appshots` | Capture and crop a Linux window from the composer; bundles its own window metadata backend | [Docs](linux-features/appshots/README.md) |
 | `authored-message-visibility` | Keep assistant and user messages visible after tool activity collapses | [Docs](linux-features/authored-message-visibility/README.md) |
 | `authenticated-proxy` | Username/password support for HTTP proxies | [Docs](linux-features/authenticated-proxy/README.md) |
 | `automation-extensions` | Multi-time schedules and eager `automation_update` exposure | [Docs](linux-features/automation-extensions/README.md) |
@@ -365,8 +365,10 @@ flags as your normal desktop entry, including any required `--proxy-server=...`
 argument. Quick Chat becomes available after ChatGPT account initialization.
 
 The optional `ui-tweaks` sub-option `tweaks.selection.annotationSubmit.enabled`
-makes Ctrl+Enter send the active selected-text annotation editor's text without
-being intercepted by the regular composer; it is disabled by default.
+gives Ctrl+Enter to the active native annotation editor and retains its
+save/direct policy. The latest native editor saves by default and uses direct
+submission when that native state selects it. The sub-option is independently
+disabled by default.
 See the [annotation submit configuration](linux-features/ui-tweaks/README.md#selectionannotationsubmit).
 
 ## Configure optional features

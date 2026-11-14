@@ -32,7 +32,7 @@ Enable it in the local, gitignored feature config:
 | `modelPicker.showModelsByDefault` | `patches/model-picker-model-list.js` | Opens the advanced picker by default and shows model choices inline instead of hiding them behind the compact Power slider and a nested Model submenu. | `tweaks.modelPicker.showModelsByDefault.enabled` |
 | `reasoning.keepEffortLabelsEnglish` | `patches/reasoning-effort-labels.js` | Keeps reasoning effort values in English in the Simplified Chinese UI while leaving the surrounding interface translated. | `tweaks.reasoning.keepEffortLabelsEnglish.enabled` |
 | `selection.moreDetails` | `patches/selected-text-more-details.js` | Restores the Codex reply selection menu's More details action, which asks ChatGPT Quick Chat to explain the selected text. | `tweaks.selection.moreDetails.enabled` |
-| `selection.annotationSubmit` | `patches/selected-text-annotation-submit.js` | After selecting text, Ctrl+Enter sends the active annotation editor's text without being intercepted by the regular composer. | `tweaks.selection.annotationSubmit.enabled` |
+| `selection.annotationSubmit` | `patches/selected-text-annotation-submit.js` | Give the active native annotation editor ownership of Ctrl+Enter and retain its save/direct policy. | `tweaks.selection.annotationSubmit.enabled` |
 | `sidebar.projectName` | `patches/sidebar-project-name.js` | Styles project names in the left sidebar project list. It does not style `Projects` / `Chats` section headings and does not style chat rows. | `tweaks.sidebar.projectName.enabled`, `tweaks.sidebar.projectName.style` |
 
 The manifest's `catalogSubfeatures` metadata exposes these nine modules to
@@ -240,8 +240,27 @@ generated-source selector each live in a numbered async webview chunk, and the
 main-process eligibility check lives in an `early-bootstrap-*` chunk. Chunk
 names identify nothing, so each descriptor locates its chunk by content needles
 (the rollout gate id, the feature-sync IPC message, the generated-suggestion
-props) and then requires exactly one chunk to satisfy its full semantic
-contract, so an unrelated chunk is never selected.
+props) and then requires one complete semantic owner. Normal Home and Work Home
+each discover one Rspack module identity and validate all physical
+copies before writing, including copies that have lost their discovery needles;
+unrelated modules remain untouched.
+
+For normal Home, that owner must be the exported route's mounted page chain.
+Its rollout hook, account predicate, navigation callback and lazy content
+provider are resolved through the native Rspack imports. The content provider
+keeps the runtime status gate and passes the current host, project and callback
+to the native suggestion component; card-to-composer actions remain upstream.
+
+Work Home uses a separate native suggestion component. Its page, lazy route,
+mode-preparation callback, runtime gates, query and editor actions must resolve
+through the current native imports before any page copy is changed. The query
+keys include the current account, host, mode, Home-feed capability and
+`supportsSavedLessonChat` value. The request forwards the host, mode and
+`supportsSavedLessonChat` value to the native service. Project and Work execution
+location remain destination metadata. Selection prepares
+the destination mode and the native content action then fills and focuses the
+composer. A card without the native auto-send flag fills and focuses without sending. The upstream
+account, draft, document and hint checks remain in place across preparation.
 
 This tweak is independently disabled by default:
 
@@ -294,7 +313,8 @@ Config keys:
 ### `reasoning.keepEffortLabelsEnglish`
 
 Leaves the current reasoning effort values as `None`, `Minimal`, `Medium`,
-`High`, `XHigh`, `Max`, and `Ultra` in the Simplified Chinese locale. The
+`High`, `XHigh`, `Max`, and `Ultra`, plus the `Persistent` continuation-mode
+label, in the Simplified Chinese locale. The
 surrounding picker title and usage warning remain translated. This avoids
 collapsing distinct upstream values such as `XHigh` and `Ultra` into the same
 Chinese label. The Simplified Chinese catalog is an rspack async chunk with a
@@ -428,13 +448,21 @@ official Codex selection menu.
 
 ### `selection.annotationSubmit`
 
-After selecting text, Ctrl+Enter sends the active annotation editor's text
-without being intercepted by the regular composer.
+After selecting text, this tweak gives the active native annotation editor
+ownership of Ctrl+Enter. The editor reads its current text and applies its
+native save/direct policy. In the latest signed bundle, the selected-text
+editor sets `defaultCreateSubmitMode: "saved"`, and direct submission on edit
+defaults to `false`. Ctrl+Enter therefore saves the annotation in the default
+create and edit states. Native states that select direct submission retain
+that route.
 
 The patch finds the app shortcut owner by content across the rspack webview
-chunks and validates that the native annotation editor still renders the card
-module whose capture handler owns the Ctrl+Enter direct-submit path. If either
-contract drifts, it warns and leaves the official bundle unchanged.
+chunks. It resolves the published editor function and its card dependency
+through their actual factory snapshots, then validates the native key handler,
+current-text validation and callback forwarding. Contract drift produces a
+warning and a skipped optional-patch report. Every physical copy of the resolved
+shortcut module is validated and patched in one transaction. Distinct owner
+identities, damaged peers and mixed application states refuse the complete edit.
 
 This tweak is independently disabled by default:
 
@@ -455,22 +483,16 @@ This tweak is independently disabled by default:
 }
 ```
 
-The annotation text can briefly appear in the regular composer area before it
-is sent. The native local direct-submit path accepts the message locally with
-`acceptLocally: true` and `queueModeOverride: "queue"`. The turn coordinator
-registers a `pending` submission, and the upstream queue preview displays
-`pending` and `sending` messages in the composer panels. This explains why the
-annotation can appear to move into the input area while submission completes.
+When a native state selects direct submission, its local path accepts the
+message with `acceptLocally: true` and uses the upstream queue/send policy.
+Locally accepted submissions are tracked as `pending`, and the native queue
+preview can display `pending` or `sending` states in the composer panels while
+that route completes.
 
-The same native path builds an empty composer prompt and sets
-`preserveComposerDraft: true` to preserve the regular composer's draft. Source
-inspection supports the queue-preview explanation; the transient DOM during
-the reported visual transition was not captured.
-
-This tweak retains the native preview and submission lifecycle. Suppressing the
-visual transition would require separate handling of queued messages, sending
-progress, and failure/retry states, so that cosmetic change is outside this
-tweak's scope.
+The native direct route builds an empty composer prompt and enables
+`preserveComposerDraft` for annotation payloads to preserve the regular
+composer's draft. Queue preview and submission lifecycle remain owned by the
+upstream application.
 
 ## Drift Behavior
 

@@ -5,6 +5,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
+const { findMainProcessChunks } = require("./lib/assets.js");
+const { findMatchingBrace } = require("./lib/minified-js.js");
+const { detectLinuxTargetContext } = require("../lib/linux-target-context.js");
 const {
   createPatchReport,
   enabledFeatureFailuresFromReport,
@@ -16,22 +20,11 @@ const {
   patchExtractedApp,
   requiredPatchNamesForProfile,
 } = require("./runner.js");
-const { findMainProcessChunks } = require("./lib/assets.js");
-const {
-  findMatchingBrace,
-} = require("./lib/minified-js.js");
 
 const emptyConfig = path.join(__dirname, "..", "..", "linux-features", "features.example.json");
+const { SHELL_ENVIRONMENT_FIXTURE } = require("./core/shell-env-startup/test-helpers.js");
 
-test("the official Linux baseline needs no core compatibility patch", () => {
-  assert.deepEqual(corePatchDescriptors(), []);
-  assert.deepEqual(allPatchPolicies({ featuresConfigPath: emptyConfig }), []);
-  assert.deepEqual(requiredPatchNamesForProfile("upstream-build", {
-    featuresConfigPath: emptyConfig,
-  }), []);
-});
-
-test("the signed baseline owns approved quit completion and shell startup", {
+test("the signed baseline owns approved quit completion", {
   skip: process.env.CODEX_SIGNED_EXTRACTED_APP == null,
 }, () => {
   const mainProcess = findMainProcessChunks(process.env.CODEX_SIGNED_EXTRACTED_APP);
@@ -93,28 +86,138 @@ test("the signed baseline owns approved quit completion and shell startup", {
   assert.ok(handlerBody.indexOf(pendingCheck) < handlerBody.indexOf(localApproval));
   assert.ok(handlerBody.indexOf(localApproval) < handlerBody.indexOf(quittingTransition));
 
-  const shellOwner = uniqueOwner([
-    "main app.whenReady resolved",
-    "shell environment hydrated",
-  ], "upstream shell-startup owner");
-  const readyPattern = new RegExp(
-    `await ${identifier}\\.app\\.whenReady\\(\\),${identifier}\\(` +
-      `"main app\\.whenReady resolved"`,
-    "gu",
+});
+
+test("the signed native before-quit callback preserves privacy, approval and pending-review decisions", {
+  skip: process.env.CODEX_SIGNED_EXTRACTED_APP == null,
+}, () => {
+  const inventory = findMainProcessChunks(process.env.CODEX_SIGNED_EXTRACTED_APP);
+  assert.ok(inventory);
+  const id = "[A-Za-z_$][\\w$]*";
+  const callbacks = [];
+  for (const name of inventory.chunks) {
+    const source = fs.readFileSync(path.join(inventory.buildDir, name), "utf8");
+    const owners = [...source.matchAll(new RegExp(
+      `function\\(\\{isWindows:${id},quitState:(${id}),windows:(${id}),applicationMenuManager:` +
+        `[^{}]*hasPendingLocalGitReviewComments:(${id}),[^{}]*\\}\\)\\{`, "gu",
+    ))];
+    for (const owner of owners) {
+      const open = owner.index + owner[0].length - 1;
+      const close = findMatchingBrace(source, open);
+      assert.ok(close > open);
+      const body = source.slice(open + 1, close);
+      const heads = [...body.matchAll(new RegExp(
+        `(${id})\\.app\\.on\\("before-quit",(${id})=>\\{if\\(function\\(\\{addon:`, "gu",
+      ))];
+      assert.equal(heads.length, 1);
+      const head = heads[0], callbackOpen = head.index + head[0].indexOf("=>{") + 2;
+      const callbackClose = findMatchingBrace(body, callbackOpen);
+      assert.ok(callbackClose > callbackOpen);
+      const callback = body.slice(callbackOpen, callbackClose + 1);
+      const accepted = [...callback.matchAll(new RegExp(
+        `(${id})=!0,${owner[2]}\\.markAppQuitting\\(\\)\\}$`, "gu",
+      ))];
+      const addon = [...callback.matchAll(new RegExp(
+        `\\?\\?(${id})\\(\\{electronAppPath:${id},resourcesPath:${id}\\}\\)`, "gu",
+      ))];
+      assert.equal(accepted.length, 1);
+      assert.equal(addon.length, 1);
+      callbacks.push({ callback, event: head[2], electron: head[1], quitState: owner[1], windows: owner[2],
+        pending: owner[3], quitting: accepted[0][1], addon: addon[0][1] });
+    }
+  }
+  assert.equal(callbacks.length, 1, "Expected the unique current native quit lifecycle owner");
+  const site = callbacks[0];
+  const states = [
+    { name: "ordinary", approved: false, alreadyQuitting: false, approvalReads: 1, pendingReads: 1 },
+    { name: "approved", approved: true, alreadyQuitting: false, approvalReads: 1, pendingReads: 0 },
+    { name: "already quitting", approved: false, alreadyQuitting: true, approvalReads: 0, pendingReads: 0 },
+  ];
+  for (const platform of ["linux", "win32", "darwin"]) {
+    for (const privacy of [false, true, "throws"]) {
+      for (const state of states) {
+        let marked = 0, prevented = 0, approvalReads = 0, pendingReads = 0, approvals = 0, addonLoads = 0;
+        const context = {
+          process: { platform, resourcesPath: "/inert/resources", env: {} },
+          [site.electron]: { app: { getAppPath: () => "/inert/app", isPackaged: true } },
+          [site.windows]: { markAppQuitting: () => { marked++; } },
+          [site.quitState]: {
+            canQuitWithoutPrompt: () => { approvalReads++; return state.approved; },
+            markQuitApproved: () => { approvals++; },
+          },
+          [site.pending]: () => { pendingReads++; return false; },
+          [site.quitting]: state.alreadyQuitting,
+          [site.addon]: () => {
+            addonLoads++;
+            return { isPrivacySettingsTerminationRequest() {
+              if (privacy === "throws") throw new Error("inert unavailable addon");
+              return privacy;
+            } };
+          },
+        };
+        const callback = vm.runInNewContext(`(${site.event}=>${site.callback})`, context);
+        callback({ preventDefault() { prevented++; } });
+        const rejected = platform === "darwin" && privacy === true;
+        const label = `${platform}/${privacy}/${state.name}`;
+        assert.equal(marked, rejected ? 0 : 1, `${label}: native quitting transition`);
+        assert.equal(prevented, rejected ? 1 : 0, `${label}: native event cancellation`);
+        assert.equal(context[site.quitting], state.alreadyQuitting || !rejected, label);
+        assert.equal(approvalReads, rejected ? 0 : state.approvalReads, `${label}: native approval check`);
+        assert.equal(pendingReads, rejected ? 0 : state.pendingReads, `${label}: native pending-review check`);
+        assert.equal(approvals, 0, `${label}: no pending review approval`);
+        assert.equal(addonLoads, platform === "darwin" ? 1 : 0, `${label}: native privacy addon`);
+      }
+    }
+  }
+});
+
+function linuxTarget(id, versionId, desktop) {
+  return detectLinuxTargetContext({
+    env: {
+      CODEX_LINUX_TARGET_ID: id,
+      CODEX_LINUX_TARGET_VERSION_ID: versionId,
+      CODEX_LINUX_TARGET_DESKTOP: desktop,
+      CODEX_LINUX_TARGET_PACKAGE_FORMAT: id === "fedora" ? "rpm" : "deb",
+      PATH: "",
+    },
+    osReleaseFields: {},
+    atomic: false,
+  });
+}
+
+const fedoraKde = linuxTarget("fedora", "44", "KDE:Plasma");
+const ubuntuGnome = linuxTarget("ubuntu", "26.04", "ubuntu:GNOME");
+
+test("the official Linux baseline registers required compatibility patches", () => {
+  assert.deepEqual(
+    corePatchDescriptors().map(({ id, ciPolicy, phase }) => ({ id, ciPolicy, phase })),
+    [{
+      id: "shell-env-startup",
+      ciPolicy: "required-upstream",
+      phase: "extracted-app:pre-webview",
+    }],
   );
-  const shellStartPattern = new RegExp(
-    `(?:let|const) ${identifier}=Date\\.now\\(\\),${identifier}=\\(0,` +
-      `${identifier}\\.${identifier}\\)\\(\\),${identifier}=${identifier}=>\\{` +
-      `${identifier}\\("shell environment hydrated"`,
-    "gu",
+  assert.deepEqual(
+    allPatchPolicies({ featuresConfigPath: emptyConfig }),
+    [{
+      name: "shell-env-startup",
+      ciPolicy: "required-upstream",
+      phase: "extracted-app:pre-webview",
+    }],
   );
-  const readyMatches = [...shellOwner.matchAll(readyPattern)];
-  const shellStartMatches = [...shellOwner.matchAll(shellStartPattern)];
-  assert.equal(readyMatches.length, 1, "Expected one awaited main app readiness boundary");
-  assert.equal(shellStartMatches.length, 1, "Expected one shell-environment startup call");
-  assert.ok(
-    shellStartMatches[0].index > readyMatches[0].index,
-    "Shell-environment startup must follow awaited app readiness",
+  assert.deepEqual(
+    requiredPatchNamesForProfile("upstream-build", {
+      featuresConfigPath: emptyConfig,
+      linuxTarget: fedoraKde,
+    }),
+    ["shell-env-startup"],
+  );
+  assert.deepEqual(
+    requiredPatchNamesForProfile("upstream-build", {
+      featuresConfigPath: emptyConfig,
+      linuxTarget: ubuntuGnome,
+    }),
+    ["shell-env-startup"],
   );
 });
 
@@ -130,27 +233,62 @@ test("runner context exposes enabled feature IDs", () => {
   }
 });
 
-test("an empty core registry leaves unmatched application assets unchanged", () => {
+test("the default core registry repairs shell startup without changing other assets", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-baseline-"));
   try {
     const mainDir = path.join(root, ".vite", "build");
     const webviewDir = path.join(root, "webview", "assets");
     fs.mkdirSync(mainDir, { recursive: true });
     fs.mkdirSync(webviewDir, { recursive: true });
-    const webview = path.join(webviewDir, "app-initial-A.js");
     const main = path.join(mainDir, "early-bootstrap.js");
-    fs.writeFileSync(main, "const officialMain=true;\n");
+    const webview = path.join(webviewDir, "app-initial-A.js");
+    fs.writeFileSync(main, "const officialMain=true;");
+    const shell = path.join(mainDir, "early-bootstrap-133-abcd.js");
+    fs.writeFileSync(shell, SHELL_ENVIRONMENT_FIXTURE);
     fs.writeFileSync(webview, "official-webview\n");
-    const mainBefore = fs.readFileSync(main);
-    const webviewBefore = fs.readFileSync(webview);
     const report = createPatchReport();
     patchExtractedApp(root, {
       report,
       featuresConfigPath: emptyConfig,
+      linuxTarget: fedoraKde,
     });
-    assert.deepEqual(fs.readFileSync(main), mainBefore);
-    assert.deepEqual(fs.readFileSync(webview), webviewBefore);
-    assert.deepEqual(report.patches, []);
+    assert.equal(fs.readFileSync(main, "utf8"), "const officialMain=true;");
+    assert.equal(fs.readFileSync(webview, "utf8"), "official-webview\n");
+    assert.match(fs.readFileSync(shell, "utf8"), /await new Promise\(setImmediate\)/);
+    assert.equal(report.patches.length, 1);
+    assert.equal(report.patches[0].name, "shell-env-startup");
+    assert.equal(report.patches[0].status, "applied");
+    assert.equal(report.patches[0].ciPolicy, "required-upstream");
+    assert.equal(report.patches[0].sourceKind, "core");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("portable artifacts include the shell repair when built on Ubuntu GNOME", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-portable-shell-repair-"));
+  try {
+    const mainDir = path.join(root, ".vite", "build");
+    fs.mkdirSync(mainDir, { recursive: true });
+    const main = path.join(mainDir, "early-bootstrap.js");
+    const shell = path.join(mainDir, "early-bootstrap-133-abcd.js");
+    const shellSource = SHELL_ENVIRONMENT_FIXTURE;
+    fs.writeFileSync(main, "const officialMain=true;");
+    fs.writeFileSync(shell, shellSource);
+    const report = createPatchReport();
+
+    patchExtractedApp(root, {
+      report,
+      featuresConfigPath: emptyConfig,
+      linuxTarget: ubuntuGnome,
+    });
+
+    assert.equal(fs.readFileSync(main, "utf8"), "const officialMain=true;");
+    assert.match(fs.readFileSync(shell, "utf8"), /await new Promise\(setImmediate\)/);
+    assert.deepEqual(
+      report.patches.map(({ name, status }) => ({ name, status })),
+      [{ name: "shell-env-startup", status: "applied" }],
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -167,7 +305,11 @@ test("missing main bundle records enabled feature drift", (t) => {
 
   const entry = report.patches.find((patch) =>
     patch.name === "feature:frameless-titlebar:main-process");
+  const coreEntry = report.patches.find((patch) =>
+    patch.name === "shell-env-startup");
   assert.ok(entry);
+  assert.ok(coreEntry);
+  assert.equal(coreEntry.status, "failed-required");
   assert.equal(entry.status, "skipped-optional");
   assert.equal(entry.enforceWhenEnabled, true);
   assert.equal(entry.unavailable, true);
@@ -178,6 +320,7 @@ test("missing main bundle records enabled feature drift", (t) => {
 });
 
 test("main-process chunks are the rspack early-bootstrap entry and its numbered chunks", () => {
+  const { findMainProcessChunks } = require("./lib/assets.js");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-rspack-chunks-"));
   try {
     const buildDir = path.join(root, ".vite", "build");
@@ -205,4 +348,52 @@ test("main-process chunks are the rspack early-bootstrap entry and its numbered 
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("target context normalizes package aliases and accepts equivalent explicit overrides", () => {
+  for (const [alias, expected] of [["amd64", "x64"], ["x86_64", "x64"], ["x64", "x64"], ["aarch64", "arm64"], ["arm64", "arm64"]]) {
+    for (const key of ["CODEX_TARGET_ARCH", "CODEX_LINUX_TARGET_ARCH"]) {
+      const context = detectLinuxTargetContext({ env: { [key]: alias, PATH: "" }, osReleaseFields: {} });
+      assert.equal(context.arch, expected);
+    }
+  }
+  assert.equal(detectLinuxTargetContext({ env: {
+    CODEX_TARGET_ARCH: "amd64", CODEX_LINUX_TARGET_ARCH: "x86_64", PATH: "",
+  }, osReleaseFields: {} }).arch, "x64");
+  assert.equal(detectLinuxTargetContext({ env: {
+    CODEX_TARGET_ARCH: "arm64", CODEX_LINUX_TARGET_ARCH: "aarch64", PATH: "",
+  }, osReleaseFields: {} }).arch, "arm64");
+});
+
+test("unknown and conflicting architecture inputs reject before asset writes", t => {
+  const cache = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "codex-desktop-dev", "tmp");
+  fs.mkdirSync(cache, { recursive: true });
+  const root = fs.mkdtempSync(path.join(cache, "target-context-conflict-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const main = path.join(root, ".vite/build/early-bootstrap.js");
+  fs.mkdirSync(path.dirname(main), { recursive: true });
+  fs.writeFileSync(main, "const originalAsset=true;");
+  for (const env of [
+    { CODEX_TARGET_ARCH: "arm64", CODEX_LINUX_TARGET_ARCH: "amd64" },
+    { CODEX_TARGET_ARCH: "ppc64" },
+    { CODEX_LINUX_TARGET_ARCH: "unknown" },
+  ]) {
+    assert.throws(() => patchExtractedApp(root, {
+      featuresConfigPath: emptyConfig,
+      linuxTargetOptions: { env: { ...env, PATH: "" }, osReleaseFields: {} },
+    }), /architecture|conflicts/u);
+    assert.equal(fs.readFileSync(main, "utf8"), "const originalAsset=true;");
+  }
+});
+
+test("an explicit runner linuxTarget object keeps priority over environment detection", () => {
+  const explicit = { ...fedoraKde, arch: "arm64" };
+  const context = createMainBundleContext(null, {
+    featuresConfigPath: emptyConfig,
+    linuxTarget: explicit,
+    linuxTargetOptions: { env: { CODEX_TARGET_ARCH: "unknown", CODEX_LINUX_TARGET_ARCH: "other" } },
+  });
+  assert.equal(context.linux, explicit);
+  assert.equal(context.linuxTarget, explicit);
+  assert.equal(context.linux.arch, "arm64");
 });

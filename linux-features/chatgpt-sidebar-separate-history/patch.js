@@ -2,6 +2,8 @@
 
 const { escapeRegExp, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 
+const { findRspackExportPublication } = require("../../scripts/patches/lib/rspack-export-publication.js");
+
 const IDENT = String.raw`[A-Za-z_$][\w$]*`;
 const STORAGE_KEY = "community-chatgpt-sidebar-source-v1";
 const MODULES_MARKER = "export const __webpack_modules__={";
@@ -33,6 +35,8 @@ function chunkModules(source) {
       params: match[2]?.split(",") ?? [],
       start: index,
       end: close + 1,
+      bodyStart: index + match[0].length,
+      bodyEnd: close,
     });
     index = close + 1;
     if (source[index] === ",") index += 1;
@@ -69,12 +73,13 @@ function contract(source) {
   );
   if (!binding.test(source.slice(selectorModule.start, selectorModule.end))) return null;
 
-  const body = source.slice(storageModule.start, storageModule.end);
-  const exported = [...body.matchAll(new RegExp(
-    String.raw`[{,]${escapeRegExp(exportName)}:(?:\(\)=>)?(?<atom>${IDENT})(?=[,}])`, "g",
-  ))];
-  if (exported.length !== 1) return null;
-  const { atom } = exported[0].groups;
+  const body = source.slice(storageModule.bodyStart, storageModule.bodyEnd);
+  const exportsParam = storageModule.params[1];
+  const producerRequire = storageModule.params[2];
+  if (exportsParam == null || producerRequire == null) return null;
+  const publication = findRspackExportPublication({ moduleSource: body, params: storageModule.params }, exportName);
+  const atom = publication?.expression;
+  if (typeof atom !== "string" || !new RegExp(`^${IDENT}$`, "u").test(atom)) return null;
   const { persist } = storage[0].groups;
   const initializers = [...body.matchAll(new RegExp(
     String.raw`(?<![\w$.])${escapeRegExp(atom)}=\(0,${IDENT}\.${IDENT}\)\(${IDENT}\.${IDENT},"all"\)`, "g",
@@ -84,7 +89,7 @@ function contract(source) {
   const keyCount = source.split(STORAGE_KEY).length - 1;
   if (initializers.length === 0 && patchedCount === 1 && keyCount === 1) return { patched: true };
   if (initializers.length !== 1 || keyCount !== 0) return null;
-  const start = storageModule.start + initializers[0].index;
+  const start = storageModule.bodyStart + initializers[0].index;
   return { start, end: start + initializers[0][0].length, replacement: patched };
 }
 

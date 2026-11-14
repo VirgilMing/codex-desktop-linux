@@ -100,7 +100,7 @@ UPSTREAM_DEB=/path/to/chatgpt_<version>_<arch>.deb make build-app
 ### پیش از نصب
 
 - فقط آخرین بسته stable و امضاشده رسمی OpenAI برای لینوکس روی `amd64` و `arm64` پشتیبانی می‌شود.
-- ابزارهای build به Node.js 20 یا جدیدتر، npm، Python 3، curl، `gpgv`، `dpkg-deb`، tar، make و toolchain مربوط به C/C++ نیاز دارند. Rust برای updater و helperهای native مربوط به featureهای فعال استفاده می‌شود. `make bootstrap-native` این موارد را نصب می‌کند یا برایشان راهنما می‌دهد.
+- ابزارهای build به Node.js 22.12.0 یا جدیدتر، npm، Python 3، curl، `gpgv`، `dpkg-deb`، tar، make و toolchain مربوط به C/C++ نیاز دارند. Rust برای updater و helperهای native مربوط به featureهای فعال استفاده می‌شود. `make bootstrap-native` این موارد را نصب می‌کند یا برایشان راهنما می‌دهد.
 - بسته رسمی `chatgpt` و بسته سفارشی `codex-desktop` می‌توانند هم‌زمان نصب باشند. به‌صورت پیش‌فرض هر دو از profile بالادستی `Codex` استفاده می‌کنند و بهتر است هم‌زمان اجرا نشوند. feature اختیاری `community-profile-isolation` برای Community state جداگانه Codex و Electron فراهم می‌کند و CLI bundled خود را pin می‌کند تا کاربرانی که runtime ایزوله می‌خواهند از مرز shared-profile عبور کنند.
 - AppImage هیچ‌وقت به‌طور خودکار `--no-sandbox` اضافه نمی‌کند. اگر توزیع شما unprivileged user namespaces را غیرفعال کرده، از بسته native استفاده کنید یا راهنمای sandbox در [Troubleshooting](docs/troubleshooting.md) را ببینید.
 
@@ -175,8 +175,8 @@ rm -rf -- ./codex-app
 | Nix flake | build دستی | `nix run github:ilysenko/codex-desktop-linux` |
 | update manager تراکنشی | بسته‌های native | به‌جز buildهای دارای `PACKAGE_WITH_UPDATER=0` داخل بسته است |
 | ادغام رسمی Browser و Chrome | Upstream | مستقیم از بسته رسمی Linux استفاده می‌شود؛ legacy port layer وجود ندارد |
-| راه‌اندازی قابل‌اعتماد محیط shell | همیشه | runtime تأییدشده upstream آن را مدیریت می‌کند؛ هیچ patch اصلی برای راه‌اندازی shell اعمال نمی‌شود |
-| تکمیل قابل‌اعتماد خروج تأییدشده | Upstream | runtime تأییدشده upstream، تأیید خروج را در owner یکتای `before-quit` مصرف می‌کند تا پاک‌سازی به `will-quit` برسد |
+| ترتیب راه‌اندازی shell در Linux | همیشه | patch سازگاری الزامی، بارگذاری shell را یک دور event loop عقب می‌اندازد |
+| تکمیل قابل‌اعتماد خروج تأییدشده | Upstream | runtime تأییدشده upstream، وضعیت تأیید خروج را در owner یکتای `before-quit` بررسی می‌کند تا پاک‌سازی به `will-quit` برسد |
 | framework مربوط به Linux featureهای اختیاری | غیرفعال | با `make setup-native` تنظیم می‌شود |
 | هویت متمایز دسکتاپ | همیشه | **ChatGPT Community** با آیکون `C` آبی و هویت بسته `codex-desktop` |
 

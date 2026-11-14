@@ -4,20 +4,25 @@ Disabled-by-default renderer workarounds for machines where sidebar scrolling,
 app-shell tab layout, or streaming Markdown animations regress. Enable only after a
 measured problem on the official Linux runtime.
 
-The current tab workaround follows the redesigned app-shell tab owner and
-disables only its layout animation by replacing the owner's `animateLayout`
-expression with `false`. Its semantic matcher requires exactly one coherent
-owner correlating `animateLayout` and `animateExit` with the tab's
-workspace-home state, `closeButtonTabIndex: -1`, its controller,
-`dragActivator: "tab"`, and the same tab object. Missing, duplicate, mixed,
-partial, or drifted owners fail closed and remain byte-identical.
+The current tab workaround follows the tab-strip controller's native `render`
+call and replaces only its `animateLayout` value with `false`. The matcher
+connects the mapped tab and index to active, presented and renaming state,
+separator and keyboard/close properties, complementary exit/position flags,
+width and layout-transition inputs, and the returned keyed element. The owning
+module also contains the native tab-strip controller. Position, width, exit,
+controller and close behavior keep their native source. Missing, duplicate,
+mixed, partial or drifted render owners fail closed and remain byte-identical.
 
 The official webview is an rspack build, so the workarounds select their
 targets by content rather than by chunk name. The sidebar and tab workarounds
 each require exactly one coherent owner among the script chunks. rspack copies
 the streaming Markdown CSS module into every async stylesheet of the chunk
 groups that use it; the Markdown workaround therefore rewrites every copy of
-the fade rules, and leaves all stylesheets untouched if any copy has drifted.
+the fade rules. Every copy must have the same root identity and complete patched
+or original state; mixed, incomplete, differently identified, or drifted copies
+leave all stylesheets untouched. Writes are verified together and rolled back on
+failure; an unverified rollback stops the build. Adaptive timing, image entry,
+reduced-motion rules, and unrelated styles remain unchanged.
 
 Enable it in `linux-features/features.json` only for a reproduced regression:
 
@@ -29,7 +34,7 @@ These are upstream-bundle patches, not baseline compatibility code. Retest the
 measured regression and run:
 
 ```bash
-node --test linux-features/linux-performance-workarounds/test.js
+node --test linux-features/linux-performance-workarounds/test.js linux-features/linux-performance-workarounds/*.test.js
 ```
 
 ## Catalog subfeatures

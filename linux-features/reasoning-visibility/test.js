@@ -6,7 +6,13 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
-const { descriptors } = require("./patch.js");
+const { descriptors, applyStandalonePatch, applyTranscriptPatch } = require("./patch.js");
+const { applyPersistentPatch } = require("./persistent.js");
+const { applyExpandedPatch } = require("./expanded.js");
+const { applyRequestSummariesPatch } = require("./request-summaries.js");
+const { nativeCarrier, selectedRuntime } = require("./summary-contract.test-helpers.js");
+const { createJavaScriptLexicalIndex } = require("../../scripts/patches/lib/minified-js.js");
+const { fixture: expandedSource, harness: expandedHarness } = require("./expanded.test-helpers.js");
 const { loadLinuxFeaturePatchDescriptors } = require("../../scripts/lib/linux-features.js");
 const { findWebviewAssetsContaining, patchAssetFiles } = require("../../scripts/patches/lib/assets.js");
 const { patchBreaksJavaScriptSyntax } = require("../../scripts/patches/lib/javascript-syntax.js");
@@ -16,10 +22,12 @@ const { MESSAGE_IDS, translations, settingsContract, settingComponent, catalogPa
 // Current signed rspack/SWC shapes: double-quoted strings, literal-first
 // comparisons and the transcript key as the only template literal.
 const standaloneSource = 'function classify(e,{includeGeneratedImages:n=!1}={}){switch(e.type){case"exec":return wrap(e,"groupable");case"generated-image":return n?wrap(e,"standalone"):null;case"worktree-init":return wrap(e,"standalone");case"reasoning":case"automation-update":case"todo-list":return null}}function wrap(e,t){return{item:e,grouping:t}}';
-const persistentSource = 'function persistent({unit:e,hasFollowingFinalAnswer:t}){if("standalone"!==e.kind)return!1;let a=e.item.item;return"user-input-response"===a.type?!a.completed:"assistant-message"===a.type&&a.important?!0:"user-message"===a.type&&!t}const partition={collapsibleUnits:[],persistentUnits:[]};';
-const transcriptSource = 'function transcript(items,n){let i=[],a=[],s=()=>{a.length&&(i.push({type:"agent-activity",items:a,collapseWhenPossible:!0}),a=[])};for(let o of items){let l="reasoning"===o.type?null:{grouping:o.grouping};if(l?.grouping==="standalone"||n?.has(o)===!0){s(),i.push({type:"activity-item",key:`transcript-activity-item-${o.id}`,item:o});continue}a.push(o)}s();return i}';
-const summariesSource = 'function options(client,mode){return{reasoningSummaryOverride:!0===client.getDefaultFeatureOverride("concurrent_reasoning_summaries")||mode?"detailed":null,getRequestModel:e=>e,getRequestCollaborationMode(e){return e}}}function resolve(options,config,turn){let summary="none";null!=options.reasoningSummaryOverride&&(summary=options.reasoningSummaryOverride);summary=config.model_reasoning_summary??summary;void 0!==turn.summary&&(summary=turn.summary);return summary}';
-const expandedSource = 'function reasoning(e){let{item:n}=e,l=!n.completed,f=n.content,[h,g]=(0,React.useState)(!1),_=!l&&!!f;let v=n.content;let y=v,b=l?!!y:h,x=l?y:f,disclosure={expanded:h,onToggle:()=>{g(toggle)}},scroll={items:[{key:"reasoning-markdown",node:x}],autoScrollToBottom:l,viewState:"expanded"};return{visible:b,disclosure,scroll}}function toggle(e){return!e}';
+const persistentSource = 'var f={o:e=>e.mcpPersistent},p={Yr:e=>e.important,rt:e=>e.important},h={Q1:e=>e.dynamicPersistent},m={Hn:()=>null};' +
+  fs.readFileSync(path.join(__dirname,"../../scripts/patches/lib/fixtures/current-activity-partition.js"),"utf8") +
+  'function persistent(input){return partition([input.unit],input).persistentUnits.includes(input.unit)}';
+const transcriptSource = 'const classifier={c:item=>({grouping:item.grouping})};function key(item,fallback){return item.id??fallback}function transcript(items,n){let i=[],a=[],s=()=>{a.length&&(i.push({type:"agent-activity",items:a,collapseWhenPossible:!0}),a=[])};for(let[index,o]of items.entries()){let turn=0;let l="reasoning"===o.type||"automatic-approval-review"===o.type||"subagent-activity"===o.type?null:(0,classifier.c)(o);if(l?.grouping==="standalone"||n?.has(o)===!0){s(),i.push({type:"activity-item",key:`transcript-activity-item-${key(o,`${turn}-${index}`)}`,item:o});continue}a.push(o)}s();return i}';
+const summariesSource = nativeCarrier();
+
 const sources = [standaloneSource, persistentSource, transcriptSource, summariesSource, expandedSource];
 const preference = (enabled = true) => ({ localStorage: { getItem: () => enabled ? "1" : null } });
 
@@ -29,13 +37,15 @@ function warnings(fn) {
   try { return { value: fn(), messages }; } finally { console.warn = saved; }
 }
 
+const sourceApply = index => index === 0 ? applyStandalonePatch : index === 1 ? applyPersistentPatch : index === 4 ? applyExpandedPatch : index === 2 ? applyTranscriptPatch : applyRequestSummariesPatch;
+
 function patched(index, source = sources[index]) {
-  const result = descriptors[index].apply(source);
+  const result = sourceApply(index)(source);
   assert.notEqual(result, source);
-  const repeated = warnings(() => descriptors[index].apply(result));
+  const repeated = warnings(() => sourceApply(index)(result));
   assert.equal(repeated.value, result);
   assert.deepEqual(repeated.messages, []);
-  new vm.Script(result);
+  new vm.Script(index === 3 ? result.replaceAll("export const ", "const ") : result);
   return result;
 }
 
@@ -101,43 +111,36 @@ test("transcript separates reasoning from surrounding tools and preserves order 
   assert.equal(result[2].items[0], items[2]);
 });
 
-test("requests detailed summaries while explicit config and per-turn choices still win", () => {
-  const { options, resolve } = vm.runInNewContext(patched(3) + ';({options,resolve})', preference());
-  const defaults = options({ getDefaultFeatureOverride: () => false }, false);
-  assert.equal(defaults.reasoningSummaryOverride, "detailed");
-  assert.equal(resolve(defaults, {}, {}), "detailed");
-  assert.equal(resolve(defaults, { model_reasoning_summary: "none" }, {}), "none");
-  assert.equal(resolve(defaults, { model_reasoning_summary: "concise" }, {}), "concise");
-  assert.equal(resolve(defaults, {}, { summary: "none" }), "none");
-  assert.equal(defaults.getRequestModel("example"), "example");
+test("requests detailed summaries through the selected native chain while explicit choices retain precedence", () => {
+  const resolve = selectedRuntime(patched(3), preference());
+  const client = { getDefaultFeatureOverride: () => false };
+  assert.equal(resolve(client, false, undefined, undefined, {}, {}), "detailed");
+  assert.equal(resolve(client, false, undefined, undefined, { model_reasoning_summary: "none" }, {}), "none");
+  assert.equal(resolve(client, false, undefined, undefined, { model_reasoning_summary: "concise" }, {}), "concise");
+  assert.equal(resolve(client, false, undefined, undefined, {}, { summary: "none" }), "none");
 });
 
 test("reasoning starts expanded, survives completion and supports manual collapse and reopen", () => {
-  let state;
-  const React = { useState(initial) {
-    state ??= initial;
-    return [state, (next) => { state = typeof next === "function" ? next(state) : next; }];
-  } };
-  const render = vm.runInNewContext(patched(4) + ';reasoning', { React, ...preference() });
-  const item = { completed: false, content: "Available reasoning summary" };
-  assert.equal(render({ item }).visible, true);
-  item.completed = true;
-  let result = render({ item });
-  assert.equal(result.visible, true);
-  assert.equal(result.scroll.items[0].node, item.content);
-  result.disclosure.onToggle();
-  result = render({ item });
-  assert.equal(result.visible, false);
-  result.disclosure.onToggle();
-  assert.equal(render({ item }).visible, true);
+  const app=expandedHarness(patched(4));
+  const item={completed:false,content:"Available reasoning summary"};
+  assert.equal(app.render(item).scroll.autoScrollToBottom,true);
+  item.completed=true;
+  let result=app.render(item);
+  assert.equal(result.disclosure.expanded,true);assert.equal(result.markdown.children,item.content);
+  result.disclosure.onToggle();result=app.render(item);
+  assert.equal(result.scroll,undefined);assert.equal(result.disclosure.expanded,false);
+  result.disclosure.onToggle();assert.equal(app.render(item).disclosure.expanded,true);
 });
 
 test("all contracts tolerate fresh minified identifiers and fail closed on missing or duplicate targets", () => {
   for (const [index, source] of sources.entries()) {
-    const renamed = source.replace(/\be\b/g, "inputArg").replace(/\bn\b/g, "optionsArg").replace(/\bh\b/g, "$expanded");
+    const lexical = index === 3 ? createJavaScriptLexicalIndex(source) : null;
+    const aliases = { e: "inputArg", n: "optionsArg", h: "$expanded" };
+    const renamed = index === 3 ? source.replace(/\b[enh]\b/gu, (name, at) => lexical.isCode(at) ? aliases[name] : name)
+      : source.replace(/\be\b/g, "inputArg").replace(/\bn\b/g, "optionsArg").replace(/\bh\b/g, "$expanded");
     patched(index, renamed);
     for (const invalid of ["const unrelated=1;", source + source, patched(index) + source]) {
-      const result = warnings(() => descriptors[index].apply(invalid));
+      const result = warnings(() => sourceApply(index)(invalid));
       assert.equal(result.value, invalid);
       assert.equal(result.messages.length, 1);
     }
@@ -145,9 +148,10 @@ test("all contracts tolerate fresh minified identifiers and fail closed on missi
 });
 
 test("incomplete native disclosure is preserved instead of patching a neighboring state hook", () => {
-  for (const source of [expandedSource.replace("autoScrollToBottom:l", "autoScrollToBottom:!1"),
-    expandedSource.replace("onToggle:()=>{g(toggle)}", "onToggle:handleToggle")]) {
-    const result = warnings(() => descriptors[4].apply(source));
+  for (const source of [expandedSource.replace("autoScrollToBottom:R", "autoScrollToBottom:!1"),
+    expandedSource.replace("onToggle:()=>{E(aM)}", "onToggle:handleToggle")]) {
+    assert.notEqual(source,expandedSource,"current native disclosure mutation must apply");
+    const result = warnings(() => applyExpandedPatch(source));
     assert.equal(result.value, source);
     assert.equal(result.messages.length, 1);
   }
@@ -157,13 +161,14 @@ test("a marker with an inconsistent transcript item is not accepted as patched",
   const corrupted = patched(2).replace('"reasoning"===o.type||/*community-reasoning-visibility-transcript*/',
     '"reasoning"===other.type||/*community-reasoning-visibility-transcript*/');
   assert.notEqual(corrupted, patched(2));
-  const result = warnings(() => descriptors[2].apply(corrupted));
+  const result = warnings(() => applyTranscriptPatch(corrupted));
   assert.equal(result.value, corrupted);
   assert.equal(result.messages.length, 1);
 });
 
 test("content-addressed selection patches every chunk copy and reports needle-only drift", () => {
   for (const [index, descriptor] of descriptors.slice(0, 5).entries()) {
+    if (descriptor.phase !== "webview-asset") continue;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "reasoning-assets-"));
     try {
       const assets = path.join(root, "webview/assets/async");
@@ -192,10 +197,10 @@ test("disabled preference restores upstream classification, grouping and summary
   assert.equal(persistent({ unit: { kind: "standalone", item: { item } } }), false);
   const project = vm.runInNewContext(patched(2) + ';transcript', preference(false));
   assert.equal(project([item])[0].type, "agent-activity");
-  const { options } = vm.runInNewContext(patched(3) + ';({options})', preference(false));
-  assert.equal(options({ getDefaultFeatureOverride: () => false }, false).reasoningSummaryOverride, null);
-  assert.equal(options({ getDefaultFeatureOverride: () => true }, false).reasoningSummaryOverride, "detailed");
-  assert.equal(options({ getDefaultFeatureOverride: () => false }, true).reasoningSummaryOverride, "detailed");
+  const resolve = selectedRuntime(patched(3), preference(false));
+  assert.equal(resolve({ getDefaultFeatureOverride: () => false }, false, undefined, undefined, {}, {}), "none");
+  assert.equal(resolve({ getDefaultFeatureOverride: () => true }, false, undefined, undefined, {}, {}), "detailed");
+  assert.equal(resolve({ getDefaultFeatureOverride: () => false }, true, undefined, undefined, {}, {}), "detailed");
 });
 
 function storage(initial) {
@@ -396,7 +401,7 @@ test("General setting and catalogs compose idempotently with the optional tray s
 
 const signedApp = process.env.CODEX_SIGNED_EXTRACTED_APP;
 test("official signed webview contracts patch every copy once and stay valid JavaScript", { skip: !signedApp }, () => {
-  for (const descriptor of descriptors.slice(0, 5)) {
+  for (const descriptor of descriptors.slice(0, 5).filter(d => d.phase === "webview-asset")) {
     const names = findWebviewAssetsContaining(signedApp, descriptor.assetNeedles);
     assert.ok(names.length >= 1, descriptor.id);
     for (const name of names) {

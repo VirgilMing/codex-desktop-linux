@@ -7,6 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 const util = require("node:util");
 const vm = require("node:vm");
+const { execFileSync } = require("node:child_process");
 const official = require("./fixtures/official-response-annotation.json");
 const {
   GUARD_NAME, HANDLER_MARKER, RUNTIME_MARKER, enabled,
@@ -43,7 +44,8 @@ function eventFixture(overrides = {}) {
   const event = { key: "Enter", ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
     target: input, currentTarget: form, defaultPrevented: false, repeat: false,
     composedPath: () => [input, form, editor], getModifierState: () => false,
-    preventDefault() { this.defaultPrevented = true; }, stopPropagation() {},
+    prevented: 0, stopped: 0,
+    preventDefault() { this.prevented += 1; this.defaultPrevented = true; }, stopPropagation() { this.stopped += 1; },
     ...overrides };
   event.nativeEvent = { isComposing: false, composedPath: () => event.composedPath(), ...overrides.nativeEvent };
   return { event, input, editor, form, window, document };
@@ -52,7 +54,7 @@ function eventFixture(overrides = {}) {
 // Runs the frozen official excerpts: the app shortcut owner (window capture
 // handler), the annotation card's capture keydown handler and its submit
 // path, and the composer's direct-submit callbacks and annotation store.
-function nativeHandlers(source, eventState, { mode = "create", storedBody, draft = "当前批注文字", command = "composer.submit" } = {}) {
+function nativeHandlers(source, eventState, { mode = "create", storedBody, draft = "当前批注文字", command = "composer.submit", canSubmit = true, busy = false } = {}) {
   const memo = (size) => Array(size).fill(Symbol.for("react.memo_cache_sentinel"));
   const annotations = [{ id: "annotation", text: "所选回复", annotation: storedBody }];
   let editing = { id: "annotation", mode, draftBody: draft };
@@ -60,6 +62,7 @@ function nativeHandlers(source, eventState, { mode = "create", storedBody, draft
     set: (_atom, value) => { editing = value; } };
   const sent = [];
   let generalCalls = 0;
+  let draftReads = 0;
   const jobs = [];
   let registered;
   const deepEqual = () => util.isDeepStrictEqual;
@@ -80,10 +83,11 @@ function nativeHandlers(source, eventState, { mode = "create", storedBody, draft
     o: { jsx: (_component, props) => props }, iz: "markers", rR: deepEqual,
     tr: (_scope, edit) => edit({ responseTextAnnotations: annotations }),
     uD: { d: () => [] }, cP: { lg: async () => null }, uU: async () => undefined,
-    // Annotation card state: an enabled create/edit editor without design or dictation state.
-    i: true, t3: false, ne: () => false, nr: false, nn: false, na: false, r6: { current: null }, nc() {},
+    // Synthetic direct policy for this frozen model. Signed tests below derive
+    // the current editor's default saved policy from the actual wrapper.
+    i: canSubmit, t3: busy, ne: () => false, nr: false, nn: false, na: false, r6: { current: null }, nc() {},
     rI: { current: null }, eE: true, es: false, eu: false, eJ: null, te: false, rD: true, q: null,
-    eF: { getText: () => draft, view: { dom: eventState.input } },
+    eF: { getText: () => { draftReads += 1; return draft; }, view: { dom: eventState.input } },
     nH: mode === "edit" ? "annotation" : null, ed: true, ec: true, n7: "direct",
   });
   vm.runInContext([source, official.submitComment, official.withoutDesignControls, official.directSubmitCallbacks,
@@ -100,7 +104,7 @@ function nativeHandlers(source, eventState, { mode = "create", storedBody, draft
   context.lh({ id: command, accelerator: "Ctrl+Enter", capture: true, runInRenderer: true, isMacOS: false });
   assert.equal(registered.capture, true);
   return { context, sent, jobs, dispatch() { registered.onKeyDown(eventState.event); context.annotationKeyDown(eventState.event); },
-    get generalCalls() { return generalCalls; }, get editing() { return editing; } };
+    get generalCalls() { return generalCalls; }, get editing() { return editing; }, get draftReads() { return draftReads; } };
 }
 
 function chunk(id, modules) {
@@ -108,11 +112,10 @@ function chunk(id, modules) {
     `export const __webpack_modules__={${modules}};\n//# sourceMappingURL=${id}.js.map`;
 }
 
-const editorModule = 'Edit(e,t,r){var a=r("ABep"),u=r("Card");function f(e){let{onDirectSubmit:T}=e,b=H.formatMessage(' +
-  '{id:"selectedTextAnnotationEditor.noteAriaLabel",defaultMessage:"Note"}),w=(0,a.jsx)(u.s,{inputAriaLabel:b,' +
-  'keyboardEventTarget:window,onDirectSubmit:T});return(0,a.jsxs)("div",{"data-selected-text-annotation-editor":!0,' +
-  'children:[w]})}r.d(t,{x:()=>f})}';
-const cardModule = `Card(e,t,r){r.d(t,{s:()=>tq});function tq(){return{onKeyDownCapture:${official.annotationKeyDown}}}}`;
+const currentEditorModule = official.editorModule.replace(
+  "let{body:t}=e;W.current||", "let{body:t}=e;null==T||W.current||");
+const editorModule = `Edit(e,t,r){${currentEditorModule.replace('u=r("ntJV")','u=r("Card")')}}`;
+const cardModule = `Card(e,t,r){r.d(t,{s:()=>tq});${official.cardWrapper}${official.nativeInnerHeader}${official.submitComment};return{onKeyDownCapture:${official.annotationKeyDown}}}}`;
 
 function appFixture(t, source = official.shortcutOwner) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "annotation-submit-test-"));
@@ -176,9 +179,10 @@ test("unpatched capture handler reproduces loss of the initial unsaved annotatio
   assert.equal(native.editing, null);
 });
 
-test("Ctrl+Enter sends the current native annotation body in create and edit modes", async () => {
+test("synthetic direct policy sends the current annotation body in create and edit modes", async () => {
   for (const mode of ["create", "edit"]) {
-    const native = nativeHandlers(patchSource(official.shortcutOwner), eventFixture(), { mode, storedBody: "旧批注", draft: "  新批注  " });
+    const eventState = eventFixture();
+    const native = nativeHandlers(patchSource(official.shortcutOwner), eventState, { mode, storedBody: "旧批注", draft: "  新批注  " });
     native.dispatch();
     await Promise.all(native.jobs);
     assert.equal(native.generalCalls, 0);
@@ -187,6 +191,11 @@ test("Ctrl+Enter sends the current native annotation body in create and edit mod
     assert.equal(native.sent[0].annotation.annotation, "新批注");
     assert.equal(native.sent[0].annotation.text, "所选回复");
     assert.equal(native.editing.draftBody, "  新批注  ");
+    assert.equal(native.draftReads, 1);
+    assert.equal(eventState.event.prevented, 1);
+    assert.equal(eventState.event.stopped, 1);
+    native.dispatch();
+    assert.equal(native.sent.length, 1, "the same consumed event cannot submit twice");
   }
 });
 
@@ -223,6 +232,16 @@ test("native composition and key-repeat guards prevent both annotation and ordin
   }
 });
 
+test("native current-text validation still rejects blank, disabled and busy submissions", () => {
+  for (const options of [{ draft: "   " }, { canSubmit: false }, { busy: true }]) {
+    const native = nativeHandlers(patchSource(official.shortcutOwner), eventFixture(), options);
+    native.dispatch();
+    assert.equal(native.generalCalls, 0);
+    assert.equal(native.sent.length, 0);
+    assert.equal(native.draftReads, options.draft === "   " ? 1 : 0);
+  }
+});
+
 test("scope matching handles retargeted events and Cmd+Enter without changing unrelated keys or commands", () => {
   const fixture = eventFixture();
   assert.equal(ownsShortcut("composer.submit", fixture.event), true);
@@ -251,6 +270,8 @@ test("missing, ambiguous, changed, and partially patched contracts leave assets 
   for (const source of [
     official.shortcutOwner.replace("clearAllUnreads", "renamedCommand"),
     official.shortcutOwner + official.shortcutOwner,
+    official.shortcutOwner.replace("(0,lo.W7)(s,e)","(0,lo.W7)(s,wrongEvent)")
+      .replace("return i[3]",'if(false){(0,lo.W7)(s,e)&&(e.preventDefault())}return i[3]'),
     official.shortcutOwner.replace("(0,lo.W7)(s,e)&&(e.preventDefault(),", "(0,lo.W7)(s,e)&&(e.stopPropagation(),"),
     official.shortcutOwner.replace("onKeyDown:n}", "onKeyDown:otherHandler}"),
     // Retired handler preambles are no longer accepted.
@@ -274,16 +295,43 @@ test("missing, ambiguous, changed, and partially patched contracts leave assets 
   }
 });
 
-test("duplicate rspack shortcut owners are patched as one semantic owner set", (t) => {
+test("every complete physical copy of one shortcut module patches together", (t) => {
   const app = appFixture(t);
   const duplicate = path.join(app.assets, "async", "100005.0000000005.js");
   fs.copyFileSync(app.target, duplicate);
   const result = withWarnings(() => applyAnnotationSubmit(app.root, enabledContext));
-  assert.equal(result.result.matched, 2);
+  assert.equal(result.result.matched, 1);
   assert.equal(result.result.changed, 2);
   assert.deepEqual(result.messages, []);
-  assert.equal(shortcutContract(fs.readFileSync(app.target, "utf8")).state, "applied");
-  assert.equal(shortcutContract(fs.readFileSync(duplicate, "utf8")).state, "applied");
+  for(const file of [app.target,duplicate])assert.equal(fs.readFileSync(file,"utf8"),patchSource(app.ownerChunk));
+  assert.equal(applyAnnotationSubmit(app.root,enabledContext).changed,0);
+});
+
+test("different shortcut identities and partially applied physical copies reject together", (t) => {
+  for(const partial of [false,true]){
+    const app=appFixture(t),duplicate=path.join(app.assets,"async/100005.0000000005.js");
+    fs.writeFileSync(duplicate,partial?patchSource(app.ownerChunk):app.ownerChunk.replace("Shrt(e,t,r)","Other(e,t,r)"));
+    const before=new Map([app.target,duplicate].map(file=>[file,fs.readFileSync(file)]));
+    const result=withWarnings(()=>applyAnnotationSubmit(app.root,enabledContext));
+    assert.equal(result.result.changed,0);assert.equal(result.messages.length,1);
+    for(const[file,bytes]of before)assert.deepEqual(fs.readFileSync(file),bytes);
+  }
+});
+
+test("a later shortcut-copy write failure restores the whole cohort before retry", (t) => {
+  const app=appFixture(t),duplicate=path.join(app.assets,"async/100005.0000000005.js");
+  fs.copyFileSync(app.target,duplicate);
+  const write=fs.writeFileSync;let failed=false;
+  fs.writeFileSync=(file,bytes,...args)=>{
+    if(file===duplicate&&!failed){failed=true;write(file,bytes.subarray(0,10));throw Error("inert second-copy write failure")}
+    return write(file,bytes,...args);
+  };
+  try{const result=withWarnings(()=>applyAnnotationSubmit(app.root,enabledContext));assert.equal(result.result.changed,0);assert.equal(result.messages.length,1)}
+  finally{fs.writeFileSync=write}
+  assert.equal(failed,true);
+  for(const file of [app.target,duplicate])assert.equal(fs.readFileSync(file,"utf8"),app.ownerChunk);
+  assert.equal(applyAnnotationSubmit(app.root,enabledContext).changed,2);
+  assert.equal(applyAnnotationSubmit(app.root,enabledContext).changed,0);
 });
 
 test("missing or changed native annotation scope and Ctrl+Enter handling reject the patch", (t) => {
@@ -299,11 +347,21 @@ test("missing or changed native annotation scope and Ctrl+Enter handling reject 
     (app) => rewrite(editor(app), "data-selected-text-annotation-editor", "changed-editor-scope"),
     // The editor must render the card module it requires, with onDirectSubmit.
     (app) => rewrite(editor(app), 'u=r("Card")', 'u=r("Other")'),
+    (app) => rewrite(editor(app), 'u=r("Card")', 'u=wrongLoader("Card")'),
+    (app) => rewrite(editor(app), 'null==T||W.current||', 'W.current||'),
+    (app) => rewrite(editor(app), 'null==T||W.current||', 'null==L||W.current||'),
+    (app) => rewrite(editor(app), 'null==T||W.current||', 'null!=T||W.current||'),
+    (app) => rewrite(editor(app), 'async()=>T(t)', 'async()=>L(t)'),
+    (app) => rewrite(editor(app), 'SelectedTextAnnotationEditor:()=>f', 'SelectedTextAnnotationEditor:()=>wrongEditor'),
     (app) => rewrite(editor(app), "(0,a.jsx)(u.s,", "(0,a.jsx)(u.other,"),
-    (app) => rewrite(editor(app), "keyboardEventTarget:window,onDirectSubmit:T", "keyboardEventTarget:window"),
+    (app) => rewrite(editor(app), "onDirectSubmit:B", "onWrongSubmit:B"),
     (app) => fs.unlinkSync(card(app)),
     (app) => rewrite(card(app), "r.d(t,{s:()=>tq})", "r.d(t,{other:()=>tq})"),
     (app) => rewrite(card(app), "e.ctrlKey", "e.changedModifier"),
+    (app) => rewrite(card(app), "onDirectSubmit:F,", "onDirectSubmit:wrong,"),
+    (app) => rewrite(card(app), "commentText:eF.getText()", "commentText:wrongEditor.getText()"),
+    (app) => rewrite(card(app), "submitMode:e", "submitMode:wrongMode"),
+    (app) => rewrite(card(app), '"direct"===e?U(n.payload):W(n.payload)', '"direct"===e?W(n.payload):U(n.payload)'),
     (app) => rewrite(card(app), 'n8("direct","keyboard")', 'n8("saved","keyboard")'),
     (app) => rewrite(card(app), "if(e.defaultPrevented||e.nativeEvent.isComposing)return;", "if(e.defaultPrevented)return;"),
     (app) => fs.copyFileSync(editor(app), path.join(app.assets, "async", "100006.0000000006.js")),
@@ -326,42 +384,214 @@ test("enabled patch changes one asset once and can coexist with another appended
   assert.equal(fs.readFileSync(app.target, "utf8"), patched);
 });
 
+test("a damaged second shortcut owner is not ignored while patching the valid owner", (t) => {
+  const app = appFixture(t);
+  const duplicate = path.join(app.assets, "async", "100005.0000000005.js");
+  const damaged = app.ownerChunk.replace("onKeyDown:n}", "onKeyDown:wrongHandler}");
+  assert.notEqual(damaged, app.ownerChunk);
+  fs.writeFileSync(duplicate, damaged);
+  const result = withWarnings(() => applyAnnotationSubmit(app.root, enabledContext));
+  assert.equal(result.result.changed, 0);
+  assert.equal(fs.readFileSync(app.target, "utf8"), app.ownerChunk);
+  assert.equal(fs.readFileSync(duplicate, "utf8"), damaged);
+});
+
+test("all legitimate native card replicas validate before the one shortcut owner changes", (t) => {
+  const app = appFixture(t);
+  const card = path.join(app.assets, "async", "100002.0000000002.js");
+  const duplicate = path.join(app.assets, "async", "100007.0000000007.js");
+  fs.copyFileSync(card, duplicate);
+  assert.equal(applyAnnotationSubmit(app.root, enabledContext).changed, 1);
+  assert.equal(applyAnnotationSubmit(app.root, enabledContext).changed, 0);
+  const patched = fs.readFileSync(app.target, "utf8");
+  fs.writeFileSync(duplicate, fs.readFileSync(duplicate, "utf8").replace("commentText:eF.getText()", "commentText:wrongEditor.getText()"));
+  const rejected = withWarnings(() => applyAnnotationSubmit(app.root, enabledContext));
+  assert.equal(rejected.result.changed, 0);
+  assert.equal(rejected.messages.length, 1);
+  assert.equal(fs.readFileSync(app.target, "utf8"), patched);
+});
+
+test("an unrecoverable write rollback remains a fatal patch integrity failure", (t) => {
+  const app = appFixture(t), write = fs.writeFileSync;
+  try {
+    fs.writeFileSync = (file, ...args) => {
+      if (path.resolve(file) === app.target) {
+        write(file, "damaged fixture");
+        throw new Error("injected write/rollback failure");
+      }
+      return write(file, ...args);
+    };
+    assert.throws(() => applyAnnotationSubmit(app.root, enabledContext), error => error.code === "PATCH_INTEGRITY_FAILURE");
+  } finally { fs.writeFileSync = write; }
+});
+
 // The behavioral tests above run frozen excerpts of the native shortcut and
 // annotation code. Minified names and rspack chunk boundaries change every
 // upstream release, so this signed test checks the semantic contract instead:
-// the same discovery the patch uses must find exactly one shortcut owner and
+// the same discovery must inventory one shortcut identity across its copies and
 // one native editor -> card linkage in the current official ASAR, and the
 // patch must apply once and validate.
-test("current official ASAR exposes a coherent native shortcut owner set and accepts the patch", {
-  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
-}, (t) => {
-  const { owners, editors, cards } = discoverAnnotationSubmitAssets(process.env.CODEX_SIGNED_EXTRACTED_APP);
-  assert.ok(owners.length >= 1);
-  for (const owner of owners) {
-    assert.match(owner.name, /^async\/\d+\.[0-9a-f]+\.js$/u);
-    assert.equal(shortcutContract(owner.source).state, "current");
-    assert.equal(shortcutContract(patchSource(owner.source)).state, "applied");
-  }
-  validateNativeEditor(editors, cards);
+for (const id of ["Shrt", "Edit", "Card"]) {
+  test(`markerless same-ID ${id} replicas reject before writes in raw and canonical state`, t => {
+    for (const canonical of [false,true]) {
+      const app = appFixture(t);
+      if (canonical) assert.equal(applyAnnotationSubmit(app.root,enabledContext).changed,1);
+      const replica = path.join(app.assets,"async/100009.0000000009.js");
+      fs.writeFileSync(replica,chunk(100009,`${id}(e,t,r){return false}`));
+      const files = [app.target,replica,path.join(app.assets,"async/100002.0000000002.js"),path.join(app.assets,"async/100003.0000000003.js")];
+      const before = new Map(files.map(file => [file,fs.readFileSync(file)]));
+      const result = withWarnings(() => applyAnnotationSubmit(app.root,enabledContext));
+      assert.equal(result.result.changed,0);
+      assert.equal(result.messages.length,1);
+      for (const [file,bytes] of before) assert.deepEqual(fs.readFileSync(file),bytes);
+    }
+  });
+}
 
-  const copy = fs.mkdtempSync(path.join(os.tmpdir(), "annotation-submit-official-"));
+test("shortcut and card owners require ordinary statement declarations", t => {
+  const shortcutName = /^function ([\w$]+)/u.exec(official.shortcutOwner)[1];
+  const wrapperName = /^function ([\w$]+)/u.exec(official.cardWrapper)[1];
+  const innerName = /^function ([\w$]+)/u.exec(official.nativeInnerHeader)[1];
+  for (const [kind,name] of [["shortcut",shortcutName],["wrapper",wrapperName],["inner",innerName]]) {
+    for (const form of ["named-expression","async","async-comment","generator"]) {
+      const app = appFixture(t),file = kind === "shortcut" ? app.target : path.join(app.assets,"async/100002.0000000002.js");
+      const source = fs.readFileSync(file,"utf8"),head = new RegExp(`function ${name}\\([^)]*\\)\\{`,"u").exec(source);
+      assert.ok(head);
+      const open = head.index+head[0].length-1;
+      const close = require("../../scripts/patches/lib/minified-js.js").findMatchingBrace(source,open);
+      const fn = source.slice(head.index,close+1);
+      const replacement = form === "named-expression" ? `const unused${name}=${fn};` : fn.replace(`function ${name}`,form === "async" ? `async function ${name}` : form === "async-comment" ? `async/*gap*/function ${name}` : `function* ${name}`);
+      const damaged = source.slice(0,head.index)+replacement+source.slice(close+1);
+      assert.notEqual(damaged,source);
+      assert.equal(require("../../scripts/patches/lib/javascript-syntax.js").javascriptSourceParses(damaged),true);
+      fs.writeFileSync(file,damaged);
+      const before = new Map([app.target,file].map(target => [target,fs.readFileSync(target)]));
+      const result = withWarnings(() => applyAnnotationSubmit(app.root,enabledContext));
+      assert.equal(result.result.changed,0,`${kind}/${form}`);
+      for (const [target,bytes] of before) assert.deepEqual(fs.readFileSync(target),bytes);
+    }
+  }
+});
+
+let currentNative;
+function signedNative() {
+  if (!currentNative) currentNative = require("./fixtures/native-response-annotation.js").nativeAnnotationPlan(process.env.CODEX_SIGNED_EXTRACTED_APP);
+  return currentNative;
+}
+
+test("current official ASAR exposes the published editor/card route and patches only the shortcut copies", {
+  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
+}, t => {
+  const native = signedNative(), { owners, editors, cards } = native.found;
+  assert.equal(owners.length, 2);
+  assert.equal(native.plan.editor.createMode, "saved");
+  assert.equal(native.defaults.allowDirect, true);
+  assert.equal(native.defaults.allowDirectOnEdit, false);
+  assert.equal(shortcutContract(owners[0].source).state, "current");
+  assert.equal(shortcutContract(patchSource(owners[0].source)).state, "applied");
+  const cache = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "codex-desktop-dev");
+  fs.mkdirSync(cache, { recursive: true });
+  const copy = fs.mkdtempSync(path.join(cache, "annotation-submit-official-"));
   t.after(() => fs.rmSync(copy, { recursive: true, force: true }));
-  fs.cpSync(process.env.CODEX_SIGNED_EXTRACTED_APP, copy, { recursive: true });
+  const sources = new Map([...owners, ...editors, ...cards].map(chunk => [chunk.name, chunk.source]));
+  for (const [name, source] of sources) {
+    const target = path.join(copy, "webview/assets", name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, source);
+  }
   const applied = applyAnnotationSubmit(copy, enabledContext);
   assert.equal(applied.changed, owners.length);
-  assert.deepEqual(applied.targets, owners.map((owner) => path.join("webview", "assets", owner.name)));
-  const moreDetails = require("./patches/selected-text-more-details.js");
-  const both = { feature: { settings: { tweaks: { selection: {
-    annotationSubmit: { enabled: true }, moreDetails: { enabled: true },
-  } } } } };
-  // More details patches its Quick Chat runtime chunk plus every rspack copy of
-  // the selection overlay; none of them is the shortcut owner patched above.
-  const moreDetailsApplied = moreDetails.applySelectedTextMoreDetails(copy, both);
-  assert.ok(moreDetailsApplied.changed >= 2);
-  assert.equal(moreDetailsApplied.changed, moreDetailsApplied.targets.length);
-  for (const owner of owners) {
-    assert.ok(!moreDetailsApplied.targets.includes(path.join("webview", "assets", owner.name)));
+  assert.deepEqual(applied.targets, owners.map(owner=>path.join("webview", "assets", owner.name)));
+  for (const [name, source] of sources) {
+    const actual = fs.readFileSync(path.join(copy, "webview/assets", name), "utf8");
+    assert.equal(actual, owners.some(owner=>owner.name===name) ? patchSource(source) : source);
   }
-  assert.equal(applyAnnotationSubmit(copy, both).changed, 0);
-  assert.equal(moreDetails.applySelectedTextMoreDetails(copy, both).changed, 0);
+  assert.equal(applyAnnotationSubmit(copy, enabledContext).changed, 0);
+});
+
+for (const mode of ["create", "edit"]) {
+  test(`latest native default saved policy handles current ${mode} text through the editor`, {
+    skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
+  }, async () => {
+    const native = signedNative(), state = eventFixture();
+    const runtime = require("./fixtures/native-response-annotation.js").nativeAnnotationRuntime(native, state, {mode,draft:"  当前未保存文字  "});
+    runtime.dispatch();
+    await new Promise(setImmediate);
+    assert.deepEqual(runtime.saved, ["当前未保存文字"]);
+    assert.deepEqual(runtime.direct, []);
+    assert.equal(runtime.textReads, 1);
+    assert.equal(state.event.prevented, 1);
+    assert.equal(state.event.stopped, 1);
+    assert.equal(runtime.validations[0].submitMode, "saved");
+  });
+}
+
+test("latest native direct policy stays available when the native editor selects it", {
+  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
+}, async () => {
+  const native = signedNative();
+  for (const mode of ["create", "edit"]) {
+    const state = eventFixture();
+    const runtime = require("./fixtures/native-response-annotation.js").nativeAnnotationRuntime(native, state, {
+      mode,createMode:"direct",allowDirectOnEdit:true,draft:"  直接路径文字  ",
+    });
+    runtime.dispatch();
+    await new Promise(setImmediate);
+    assert.deepEqual(runtime.direct, ["直接路径文字"]);
+    assert.deepEqual(runtime.saved, []);
+    assert.equal(runtime.textReads, 1);
+  }
+});
+
+test("latest native direct bridge ignores missing callbacks and serializes asynchronous submissions", {
+  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
+}, async () => {
+  const { editor } = signedNative().plan;
+  const busy = { current: false };
+  const globals = { [editor.directBridge.busy]: busy, [editor.callbacks.direct]: undefined };
+  const context = vm.createContext(globals);
+  const bridge = vm.runInContext(`(${editor.directBridge.source})`, context);
+  for (const callback of [undefined, null]) {
+    context[editor.callbacks.direct] = callback;
+    assert.doesNotThrow(() => bridge({ body: "未提交文字" }));
+    assert.equal(busy.current, false);
+  }
+  const submitted = [];
+  let finish;
+  context[editor.callbacks.direct] = body => {
+    submitted.push(body);
+    return new Promise(resolve => { finish = resolve; });
+  };
+  bridge({ body: "首次提交文字" });
+  bridge({ body: "重复提交文字" });
+  assert.deepEqual(submitted, ["首次提交文字"]);
+  assert.equal(busy.current, true);
+  finish();
+  await new Promise(setImmediate);
+  assert.equal(busy.current, false);
+  bridge({ body: "随后提交文字" });
+  assert.deepEqual(submitted, ["首次提交文字", "随后提交文字"]);
+  finish();
+  await new Promise(setImmediate);
+  assert.equal(busy.current, false);
+});
+
+test("latest native IME/repeat and submit validation guard the yielded event", {
+  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
+}, async () => {
+  const native = signedNative();
+  for (const [event,settings] of [[{nativeEvent:{isComposing:true}},{}],[{repeat:true},{}],[{},{canSubmit:false}],[{},{busy:true}],[{},{createMode:"direct",draft:"   "}]]) {
+    const state = eventFixture(event);
+    const runtime = require("./fixtures/native-response-annotation.js").nativeAnnotationRuntime(native, state, settings);
+    runtime.dispatch();
+    await new Promise(setImmediate);
+    assert.deepEqual(runtime.direct, []);
+    assert.deepEqual(runtime.saved, []);
+  }
+  const state = eventFixture();
+  const empty = require("./fixtures/native-response-annotation.js").nativeAnnotationRuntime(native, state, {draft:"   "});
+  empty.dispatch();
+  await new Promise(setImmediate);
+  assert.deepEqual(empty.saved, [""]);
+  assert.equal(empty.validations[0].allowEmptySubmit, true);
 });

@@ -2,27 +2,27 @@
 
 const { applyLinuxComputerUsePluginGatePatch } = require("./plugin-gate.js");
 
-const { mainBundlePatch, webviewAssetPatch } = require("../../scripts/patches/descriptor.js");
+const { mainBundlePatch, webviewAssetPatch, extractedAppPatch, PHASE_EXTRACTED_APP_POST_WEBVIEW } = require("../../scripts/patches/descriptor.js");
 const {
   applyLinuxComputerUseAvatarCursorBridgePatch,
   applyLinuxComputerUseFeaturePatch,
-  applyLinuxComputerUseHostPlatformPatch,
-  matchesLinuxComputerUseHostPlatformContract,
 } = require("../../scripts/patches/impl/computer-use.js");
 
 const {
   NATIVE_SETTINGS_VISIBILITY_NEEDLES,
   applyNativeSettingsAvailabilityPatch,
-  applyNativeSettingsVisibilityPatch,
+  applyNativeSettingsVisibilityAssets,
 } = require("./settings.js");
-const { applyUnifiedComputerUsePatch } = require("./unified.js");
-const { applyNativeApplicationsPatch } = require("./native-applications.js");
+const { patchUnifiedComputerUseAssets } = require("./unified.js");
+const { patchNativeApplicationsAssets } = require("./native-applications.js");
+const { applyLinuxComputerUseHostPlatformPatch, matchesLinuxComputerUseHostPlatformContract } = require("./host-platform.js");
 
 module.exports = [
-  mainBundlePatch({
+  extractedAppPatch({
     id: "unified-runtime",
+    phase: "extracted-app:pre-webview",
     order: 20_115,
-    apply: applyUnifiedComputerUsePatch,
+    apply: patchUnifiedComputerUseAssets,
   }),
   mainBundlePatch({
     id: "avatar-cursor",
@@ -45,10 +45,11 @@ module.exports = [
     ciPolicy: "optional",
     apply: applyLinuxComputerUsePluginGatePatch,
   }),
-  mainBundlePatch({
+  extractedAppPatch({
     id: "native-applications",
+    phase: "extracted-app:pre-webview",
     order: 20_130,
-    apply: applyNativeApplicationsPatch,
+    apply: patchNativeApplicationsAssets,
   }),
   webviewAssetPatch({
     id: "ui-availability",
@@ -72,14 +73,11 @@ module.exports = [
     skipDescription: "Linux Computer Use host-platform patch",
     apply: applyLinuxComputerUseHostPlatformPatch,
   }),
-  webviewAssetPatch({
+  extractedAppPatch({
     id: "native-settings-visibility",
+    phase: PHASE_EXTRACTED_APP_POST_WEBVIEW,
     order: 20_160,
-    // rspack duplicates the Plugins presentation module into several lazy
-    // chunks; every copy must hide the native component, so no assetMatch.
     assetNeedles: NATIVE_SETTINGS_VISIBILITY_NEEDLES,
-    missingDescription: "Plugins presentation filter",
-    skipDescription: "Linux native Settings visibility patch",
-    apply: applyNativeSettingsVisibilityPatch,
+    apply: applyNativeSettingsVisibilityAssets,
   }),
 ];
