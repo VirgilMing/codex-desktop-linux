@@ -61,3 +61,44 @@ not the active tree or the updater's recorded rollback artifact.
 Package manager output under `/opt/codex-desktop` is installed state, not a
 development source tree. Fix templates in the repository, rebuild a package,
 and reinstall rather than modifying `/opt` in place.
+
+## Shared Object bridge retirement
+
+The upstream Linux interface comparison records the retirement of
+`electronBridge.getSharedObjectSnapshotValue`, the
+`codex_desktop:get-shared-object-snapshot` IPC entry, the shared-object
+snapshot/set/subscribe/unsubscribe/update channels, and the main-process
+`sharedObjectRepository` between packages `26.1027.51404` and `26.1029.61003`.
+
+The `26.1103.60933` compatibility audit found zero repository-owned consumers
+across the tracked bridge, request, settings, launcher, updater and feature
+sources. A separate static census covered both architecture extracts, and nine
+actual repository generator outputs covered Chronicle/Record & Replay handlers,
+the Remote device-key provider, the Computer Use cursor bridge, sidebar styling
+and the Work Power resolver contribution. The complete feature-output census is
+part of final integration validation.
+
+New injected state and request adapters resolve the current native owner or
+use their feature-owned state hooks. Source inspection and generated-code
+checks establish the consumer scope. Live GUI state operations and IPC
+subscriptions retain their separate runtime validation scope.
+
+## Review delivery protocol
+
+The signed `26.1103.60933` package bundles CLI `0.167.0-alpha.3.2`. Its offline
+schema exports contain 322 files by default and 470 with experimental methods.
+Both exports define the app-server `ReviewDelivery` string enum as `inline`.
+`ReviewStartParams.delivery` permits omission, `null`, or `inline`. An
+independent review thread starts with `thread/start`, and `review/start` then
+uses that thread's ID.
+
+The Desktop review UI also has an `inline`/`detached` preference. Its detached
+path creates a `code_review` conversation and submits an ordinary text turn.
+That preference and its translated labels retain their UI meaning. A
+repository-owned app-server request constructor follows the generated wire
+schema for its delivery field.
+
+The consumer audit found zero repository-owned `review/start` request
+constructors or `ReviewDelivery` consumers. Its evidence consists of signed CLI
+identity, offline schema exports and static source/client classification. Real
+review completion has a separate runtime evidence scope.
