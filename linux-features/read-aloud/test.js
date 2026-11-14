@@ -21,6 +21,7 @@ const {
 } = require("./patch.js");
 const {
   applyWebviewAssetPatchDescriptors,
+  applyExtractedAppPatchDescriptors,
   normalizePatchDescriptors,
 } = require("../../scripts/patches/engine.js");
 const { createPatchReport } = require("../../scripts/lib/patch-report.js");
@@ -340,7 +341,7 @@ test("webview runtime appends only once", () => {
   assert.match(patched, /codexLinuxReadAloudSetup/);
   assert.match(patched, /action:"setup",mode/);
   assert.match(patched, /9e5/);
-  assert.match(applyIndexRuntimePatch("globalThis.codexLinuxReadAloudClick=()=>{};"), /kokoro-explicit-v6/);
+  assert.throws(() => applyIndexRuntimePatch("globalThis.codexLinuxReadAloudClick=()=>{};"), /Incomplete, duplicate or misplaced Read Aloud runtime/);
   assert.doesNotMatch(patched, /SpeechSynthesisUtterance/);
   assert.doesNotMatch(patched, /browser speech/);
   assert.doesNotMatch(patched, /no-voices/);
@@ -1230,15 +1231,17 @@ test("main handler downloads setup files atomically", async () => {
 });
 
 function assistantRenderFixture({ jsxVar = "s", component = "eA.F" } = {}) {
-  const sourceTurnCall = `(0,${jsxVar}.jsx)(${component},{item:o,alwaysShowActions:ge,assistantCopyText:a,sourceTurnId:T,savedContentResponseId:E,after:A,compactAttachment:M,autoReviewStats:L,hookStats:R,completedThreadGoal:te,conversationId:p,cwd:b,hostId:x,reportEntityType:S,markdownMediaCacheKey:e,projectlessOutputDirectory:Ee,outputFileLinks:O,forceCodeBlockWordWrap:Ye,hasArtifacts:De,onAddResponseTextAnnotation:s,onNavigateResponseTextAnnotation:qe,onFileLinkOpen:I,onFork:ie,renderCodeBlocksAsWritingBlocks:Ye,showActionRow:_e,showTimestampHeader:r,showTimestampWithoutActions:ye,timestampHoverOnly:be,trailingActions:fe,renderUsedSkillsDetails:re})`;
-  const liveTurnCall = `(0,${jsxVar}.jsx)(${component},{item:n,showShimmer:we,alwaysShowActions:ge,assistantCopyText:w,turnId:T,isReadOnly:ro,savedContentResponseId:E,autoReviewStats:L,hookStats:R,completedThreadGoal:te,after:A,compactAttachment:M,conversationId:p,getVisualizeTurnTriggerType:m,cwd:b,hostId:x,reportEntityType:S,markdownMediaCacheKey:e,projectlessOutputDirectory:Ee,outputFileLinks:O,forceCodeBlockWordWrap:Ye,hasArtifacts:De,onAddResponseTextAnnotation:i,onNavigateResponseTextAnnotation:qe,onFileLinkOpen:I,onFork:ie,renderCodeBlocksAsWritingBlocks:Ye,showActionRow:_e,showTimestampHeader:r,showTimestampWithoutActions:ye,timestampHoverOnly:be,allowCopyWhileStreaming:Fe,additionalActions:ce,trailingActions:fe,renderUsedSkillsDetails:re,persistentAdditionalActions:de})`;
-  const prefix = "export const __rspack_esm_id=366297;export const __rspack_esm_ids=[366297];const partition={collapsibleUnits:[],persistentUnits:[]}";
-  return {
-    liveTurnCall,
-    prefix,
-    source: `${prefix};${sourceTurnCall};${liveTurnCall}`,
-    sourceTurnCall,
-  };
+  const sourceTurnCall = `(0,${jsxVar}.jsx)(${component},{item:o,alwaysShowActions:ge,assistantCopyText:a,sourceTurnId:T,savedContentResponseId:E,after:A,compactAttachment:M,autoReviewStats:L,hookStats:R,completedThreadGoal:te,conversationId:p,cwd:b,hostId:x,reportEntityType:S,markdownMediaCacheKey:e,projectlessOutputDirectory:Ee,outputFileLinks:O,forceCodeBlockWordWrap:Ye,hasArtifacts:De,onAddResponseTextAnnotation:s,onNavigateResponseTextAnnotation:qe,onFileLinkOpen:I,onFork:ie,renderCodeBlocksAsWritingBlocks:Ye,showActionRow:_e,showTimestampHeader:r,showTimestampWithoutActions:ye,timestampHoverOnly:be,trailingActions:fe,renderUsedSkillsDetails:qe})`;
+  const liveTurnCall = `(0,${jsxVar}.jsx)(${component},{item:n,showShimmer:we,alwaysShowActions:ge,assistantCopyText:w,turnId:T,isReadOnly:!1,savedContentResponseId:E,autoReviewStats:L,hookStats:R,completedThreadGoal:te,after:A,compactAttachment:M,conversationId:p,getVisualizeTurnTriggerType:m,cwd:b,hostId:x,reportEntityType:S,markdownMediaCacheKey:e,projectlessOutputDirectory:Ee,outputFileLinks:O,forceCodeBlockWordWrap:Ye,hasArtifacts:De,onAddResponseTextAnnotation:i,onNavigateResponseTextAnnotation:qe,onFileLinkOpen:I,onFork:ie,renderCodeBlocksAsWritingBlocks:Ye,showActionRow:_e,showTimestampHeader:r,showTimestampWithoutActions:ye,timestampHoverOnly:be,allowCopyWhileStreaming:Fe,additionalActions:ce,trailingActions:fe,renderUsedSkillsDetails:qe,persistentAdditionalActions:de})`;
+  const componentMatch = /^([\w$]+)\.([\w$]+)$/.exec(component);
+  const namespace = componentMatch?.[1] ?? component;
+  const componentExport = componentMatch?.[2] ?? "F";
+  const props = [...new Set([...(`${sourceTurnCall}${liveTurnCall}`).matchAll(/(?:^|[,{}])([\w$]+):/g)].map(match => match[1]))];
+  const nativeComponent = `Component(e,t,n){n.d(t,{${componentExport}:()=>row});function row(props){let{${props.map((name,index)=>`${name}:value${index}`).join(",")}}=props;return null}}`;
+  const prefix = 'export const __rspack_esm_ids=[366297];export const __webpack_modules__={';
+  const source = prefix + `Producer(e,t,n){n.d(t,{F:()=>render});var ${jsxVar}=n("Jsx"),${namespace}=n("Component");` +
+    `const partition={collapsibleUnits:[],persistentUnits:[]};function render(props){return[${sourceTurnCall},${liveTurnCall}]}},${nativeComponent}};`;
+  return { liveTurnCall, prefix, source, sourceTurnCall };
 }
 
 test("assistant render patch atomically adds buttons to the current two-call topology", () => {
@@ -1248,9 +1251,27 @@ test("assistant render patch atomically adds buttons to the current two-call top
   assert.equal((patched.match(/codex-linux-read-aloud-icon/g) ?? []).length, 2);
   assert.equal((patched.match(/viewBox:"0 0 24 24"/g) ?? []).length, 2);
   assert.doesNotMatch(patched, /children:"Read aloud"/);
-  assert.match(patched, /globalThis\.codexLinuxReadAloudClick\?\.\(o,a,p,e\.currentTarget\)/);
-  assert.match(patched, /globalThis\.codexLinuxReadAloudClick\?\.\(n,w,p,e\.currentTarget\)/);
+  assert.match(patched, /globalThis\.codexLinuxReadAloudClick\?\.\(codexLinuxReadAloudChild\.props\.item,codexLinuxReadAloudChild\.props\.assistantCopyText,codexLinuxReadAloudChild\.props\.conversationId,codexLinuxReadAloudEvent\.currentTarget\)/);
+  assert.ok(patched.includes(fixture.sourceTurnCall));
+  assert.ok(patched.includes(fixture.liveTurnCall));
   assert.equal(matchesAssistantRuntimeContract(patched), true);
+});
+
+test("assistant render contract requires current used-skills and live read-only props", () => {
+  const fixture=assistantRenderFixture();
+  for(const changed of [
+    fixture.source.replace(",renderUsedSkillsDetails:qe",""),
+    fixture.source.replace(",isReadOnly:!1",""),
+    fixture.source.replace(",renderUsedSkillsDetails:qe",",electronAfter:N"),
+    fixture.source.replace(/,renderUsedSkillsDetails:value[0-9]+/u,""),
+    fixture.source.replace(/,isReadOnly:value[0-9]+/u,""),
+  ]){
+    assert.notEqual(changed,fixture.source);
+    const result=captureWarnings(()=>applyAssistantRenderPatch(changed));
+    assert.equal(result.result,changed);assert.equal(result.warnings.length,1);
+  }
+  const patched=applyAssistantRenderPatch(fixture.source);
+  assert.ok(patched.includes(fixture.sourceTurnCall));assert.ok(patched.includes(fixture.liveTurnCall));
 });
 
 test("assistant render patch ignores normalized assistant items without render props", () => {
@@ -1297,7 +1318,7 @@ test("assistant render patch ignores unrelated JSX calls beside the complete top
 
 test("assistant render patch rejects a missing current render call without modifying the asset", () => {
   const fixture = assistantRenderFixture();
-  const source = `${fixture.prefix};${fixture.liveTurnCall}`;
+  const source = fixture.source.replace(fixture.sourceTurnCall, "null");
   const { result, warnings } = captureWarnings(() => applyAssistantRenderPatch(source));
 
   assert.equal(result, source);
@@ -1307,7 +1328,8 @@ test("assistant render patch rejects a missing current render call without modif
 
 test("assistant render patch rejects an additional assistant-shaped call without modifying the asset", () => {
   const fixture = assistantRenderFixture();
-  const source = `${fixture.source};(0,$.jsx)(Other,{item:q,assistantCopyText:r,conversationId:s})`;
+  const extra = `(0,$.jsx)(Other,{item:q,assistantCopyText:r,conversationId:s})`;
+  const source = fixture.source.replace(fixture.liveTurnCall, fixture.liveTurnCall + "," + extra);
   const { result, warnings } = captureWarnings(() => applyAssistantRenderPatch(source));
 
   assert.equal(result, source);
@@ -1317,7 +1339,7 @@ test("assistant render patch rejects an additional assistant-shaped call without
 
 test("assistant render patch rejects duplicate topology roles without modifying the asset", () => {
   const fixture = assistantRenderFixture();
-  const source = `${fixture.source};${fixture.sourceTurnCall}`;
+  const source = fixture.source.replace(fixture.liveTurnCall, fixture.sourceTurnCall);
   const { result, warnings } = captureWarnings(() => applyAssistantRenderPatch(source));
 
   assert.equal(result, source);
@@ -1328,11 +1350,12 @@ test("assistant render patch rejects duplicate topology roles without modifying 
 test("assistant render patch rejects mixed patched and unpatched topology without modifying the asset", () => {
   const fixture = assistantRenderFixture();
   const patched = applyAssistantRenderPatch(fixture.source);
-  const firstWrapperStart = patched.indexOf("(0,s.jsxs)(s.Fragment");
-  const secondWrapperSeparator = patched.indexOf(";(0,s.jsxs)(s.Fragment", firstWrapperStart);
-  assert.notEqual(firstWrapperStart, -1);
-  assert.notEqual(secondWrapperSeparator, -1);
-  const mixed = `${patched.slice(0, firstWrapperStart)}${fixture.sourceTurnCall}${patched.slice(secondWrapperSeparator)}`;
+  const firstWrapperStart = patched.indexOf("/*codex-linux-read-aloud-assistant:source-turn*/");
+  const firstNative = patched.indexOf(fixture.sourceTurnCall, firstWrapperStart);
+  assert.ok(firstWrapperStart >= 0 && firstNative > firstWrapperStart);
+  const firstWrapperEnd = firstNative + fixture.sourceTurnCall.length + 1;
+  const mixed = patched.slice(0, firstWrapperStart) + fixture.sourceTurnCall + patched.slice(firstWrapperEnd);
+
   const { result, warnings } = captureWarnings(() => applyAssistantRenderPatch(mixed));
 
   assert.equal(result, mixed);
@@ -1347,111 +1370,383 @@ test("assistant runtime descriptor targets the current assistant render chunk by
   assert.equal(descriptor.assetPattern, undefined);
   assert.deepEqual(descriptor.assetNeedles, ["collapsibleUnits:", "persistentUnits:", "assistantCopyText:"]);
   assert.equal(descriptor.assetMatch(assistantRenderFixture({ jsxVar: "Q" }).source), true);
-  assert.equal(descriptor.assetMatch(assistantRenderFixture({ component: "Vb" }).source), true);
+  assert.equal(descriptor.assetMatch(assistantRenderFixture({ component: "Vb" }).source), false);
+  assert.equal(descriptor.phase, "extracted-app:pre-webview");
   assert.equal(descriptor.assetMatch("const unrelated=true"), false);
 });
 
 function runtimeEntryFixture(id = 348410) {
-  return `var e,a,c,u={Gav4(e,a,c){let f="codex-host-chunked-message-v1"}};import*as k from"./782259.9dd29a0a62.js";p.C(k);var O=p.O(void 0,["782259"],()=>p("R2r9"));p.O(O);export{v as __webpack_require__};\n//# sourceMappingURL=${id}.09aab3f377.js.map`;
+  return 'var cache={},modules={Main(e,t,r){t.ready=true},Gav4(e,t,r){let marker="codex-host-chunked-message-v1";r.d(t,{},{I:marker,Z:function(message){return "marker"in message&&message.marker===marker&&"transferId"in message&&"sequence"in message&&Number.isSafeInteger(message.sequence)&&"kind"in message&&"tokens"in message&&Array.isArray(message.tokens)}})},Receiver(e,t,r){var codec=r("Gav4");r.d(t,{},{read:class{receive(message){return (0,codec.Z)(message)?message:null}}})},Router(e,t,r){var codec=r("Gav4"),receiver=r("Receiver");let instance=new receiver.read;r.d(t,{},{route:function(message){return message.marker===codec.I?instance.receive(message):null}})}};function req(id){var item=cache[id];if(item)return item.exports;var item=cache[id]={exports:{}};modules[id].call(item.exports,item,item.exports,req);return item.exports}var exported=req;import*as shared from"./shared.js";req.C(shared);var boot=req.O(void 0,["1"],()=>req("Main"));req.O(boot);export{exported as __webpack_require__};\n//# sourceMappingURL=' + id + '.js.map';
 }
 
-test("webview runtime descriptor targets rspack runtime entries by content", () => {
-  const descriptor = featurePatches.find((patch) => patch.id === "webview-runtime");
-  assert.ok(descriptor);
-  assert.equal(descriptor.pattern, undefined);
-  assert.deepEqual(descriptor.assetNeedles, ["codex-host-chunked-message-v1", "as __webpack_require__}"]);
-  const patched = twice(applyRuntimeEntryPatch, runtimeEntryFixture());
-  assert.equal(patched.split("kokoro-explicit-v6").length - 1, 1);
-  assert.ok(patched.startsWith(runtimeEntryFixture()));
-  const unrelated = 'export const __rspack_esm_id=1;let f="codex-host-chunked-message-v1"';
-  const { result, warnings } = captureWarnings(() => applyRuntimeEntryPatch(unrelated));
-  assert.equal(result, unrelated);
-  assert.match(warnings.join("\n"), /rspack webview runtime entry contract/);
-});
-
-test("webview runtime descriptor patches every rspack runtime entry once", () => {
+function runtimeAppFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-read-aloud-entry-"));
-  try {
-    const assetsDir = path.join(root, "webview", "assets");
-    fs.mkdirSync(path.join(assetsDir, "async"), { recursive: true });
-    const entries = ["348410.09aab3f377.js", "357055.8ef98feffe.js"];
-    for (const [index, name] of entries.entries()) {
-      fs.writeFileSync(path.join(assetsDir, name), runtimeEntryFixture(348410 + index));
-    }
-    fs.writeFileSync(path.join(assetsDir, "async", "24191.7b05d5cf83.js"), "export const __rspack_esm_id=24191;");
-    const descriptor = featurePatches.find((patch) => patch.id === "webview-runtime");
-    const descriptors = normalizePatchDescriptors([{ ...descriptor, featureId: "read-aloud", sourceKind: "feature" }]);
-    const firstReport = createPatchReport();
-    const secondReport = createPatchReport();
-    applyWebviewAssetPatchDescriptors(root, descriptors, {}, firstReport);
-    applyWebviewAssetPatchDescriptors(root, descriptors, {}, secondReport);
-    for (const name of entries) {
-      assert.equal(fs.readFileSync(path.join(assetsDir, name), "utf8").split("kokoro-explicit-v6").length - 1, 1);
-    }
-    assert.doesNotMatch(fs.readFileSync(path.join(assetsDir, "async", "24191.7b05d5cf83.js"), "utf8"), /kokoro/);
-    assert.equal(firstReport.patches[0].status, "applied");
-    assert.equal(secondReport.patches[0].status, "already-applied");
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("assistant runtime descriptor fails soft and atomically when the current render contract drifts", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-read-aloud-drift-"));
-  try {
-    const assetsDir = path.join(root, "webview", "assets");
-    fs.mkdirSync(assetsDir, { recursive: true });
-    const assetPath = path.join(
-      assetsDir,
-      "sites-end-resource-current.js",
-    );
-    const source = "console.log(`assistant render contract moved`);";
-    fs.writeFileSync(assetPath, source);
-    const descriptor = featurePatches.find((patch) => patch.id === "assistant-runtime");
-    const descriptors = normalizePatchDescriptors([
-      { ...descriptor, featureId: "read-aloud", sourceKind: "feature" },
-    ]);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const assets = path.join(root, "webview/assets");
+  fs.mkdirSync(assets, { recursive: true });
+  fs.writeFileSync(path.join(root, "webview/index.html"), '<script type="module" src="/assets/shared.js"></script><script type="module" src="/assets/main.js"></script>');
+  fs.writeFileSync(path.join(root, "webview/detached-window.html"), '<script type="module" src="/assets/shared.js"></script><script type="module" src="/assets/detached.js"></script>');
+  fs.writeFileSync(path.join(assets, "main.js"), runtimeEntryFixture());
+  fs.writeFileSync(path.join(assets, "detached.js"), runtimeEntryFixture(357055));
+  fs.writeFileSync(path.join(assets, "shared.js"), 'export const __rspack_esm_ids=["1"];export const __webpack_modules__={Support(e,t,r){t.ready=true}};');
+  const descriptor = featurePatches.find(patch => patch.id === "webview-runtime");
+  const selected = normalizePatchDescriptors([{ ...descriptor, featureId: "read-aloud", sourceKind: "feature" }]);
+  return { root, assets, run() {
     const report = createPatchReport();
+    applyExtractedAppPatchDescriptors(root, selected, {}, report, "extracted-app:pre-webview");
+    return report.patches[0];
+  } };
+}
 
-    applyWebviewAssetPatchDescriptors(root, descriptors, {}, report);
+function runtimeFixtureBytes(fixture) {
+  return Object.fromEntries(["webview/index.html", "webview/detached-window.html", "webview/assets/main.js", "webview/assets/detached.js", "webview/assets/shared.js"]
+    .map(name => [name, fs.readFileSync(path.join(fixture.root, name), "utf8")]));
+}
 
-    assert.equal(fs.readFileSync(assetPath, "utf8"), source);
-    assert.equal(report.patches.length, 1);
-    assert.equal(report.patches[0].status, "skipped-optional");
-    assert.match(report.patches[0].reason, /current primary thread assistant bundle/);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+function assertRuntimeFixtureBytes(fixture, expected) {
+  for (const [name, text] of Object.entries(expected)) assert.equal(fs.readFileSync(path.join(fixture.root, name), "utf8"), text, name);
+}
+
+test("webview runtime descriptor qualifies native entry bindings and complete source", () => {
+  const descriptor = featurePatches.find(patch => patch.id === "webview-runtime");
+  assert.equal(descriptor.phase, "extracted-app:pre-webview");
+  const raw = runtimeEntryFixture();
+  const patched = twice(applyRuntimeEntryPatch, raw);
+  assert.ok(patched.startsWith(raw));
+  assert.equal(patched.split('globalThis.codexLinuxReadAloudVersion=VERSION').length - 1, 1);
+  for (const variant of [
+    patched.replace('const METHOD="linux-read-aloud"', 'const METHOD="wrong-handler"'),
+    patched + applyIndexRuntimePatch(""),
+    raw.replace('var exported=req;', 'var exported=other;'),
+    raw.replace('var exported=req;', 'var exported=req;exported=other;'),
+    raw.replace('Array.isArray(message.tokens)', 'Array.isArray(other.tokens)'),
+    raw.replace('(0,codec.Z)(message)', '(0,other.Z)(message)'),
+    raw.replace('message.marker===codec.I', 'message.marker===other.I'),
+    raw.replace('receiver=r("Receiver")', 'receiver=r("Other")'),
+    raw.replace('new receiver.read', 'new other.read'),
+    raw.replace('var boot=req.O', 'if(false)var boot=req.O'),
+  ]) {
+    const result = captureWarnings(() => applyRuntimeEntryPatch(variant));
+    assert.equal(result.result, variant);
+    assert.equal(result.warnings.length, 1);
+  }
+  const markerData = raw + '\n/*kokoro-explicit-v6*/';
+  assert.notEqual(applyRuntimeEntryPatch(markerData), markerData);
+  const unrelated = 'export const unrelated=1;';
+  assert.equal(captureWarnings(() => applyRuntimeEntryPatch(unrelated)).result, unrelated);
+});
+
+function assertRuntimeAuthorityRefusal(t, source, label) {
+  const result = captureWarnings(() => applyRuntimeEntryPatch(source));
+  assert.equal(result.result, source, label);
+  assert.equal(result.warnings.length, 1, label);
+  const fixture = runtimeAppFixture(t);
+  for (const name of ["main.js", "detached.js"]) fs.writeFileSync(path.join(fixture.assets, name), source);
+  const bytes = runtimeFixtureBytes(fixture), oldWrite = fs.writeFileSync;
+  let writes = 0;
+  fs.writeFileSync = (...args) => { writes++; return oldWrite(...args); };
+  try { assert.equal(fixture.run().status, "skipped-optional", label); }
+  finally { fs.writeFileSync = oldWrite; }
+  assert.equal(writes, 0, label);
+  assertRuntimeFixtureBytes(fixture, bytes);
+}
+
+test("UP61 authority rejects owned global destruction and nested free binding writes", t => {
+  for (const tail of [
+    'delete globalThis.codexLinuxReadAloudClick;',
+    'delete globalThis["codexLinuxReadAloudSetup"];',
+    "delete (window['codexLinuxReadAloudClick']);",
+    'globalThis.codexLinuxReadAloudClick++;',
+    '++globalThis.codexLinuxReadAloudClick;',
+    'globalThis.codexLinuxReadAloudClick&&=null;',
+    'globalThis[`codexLinuxReadAloudSetup`]||=null;',
+    'Object.defineProperty(globalThis,"codexLinuxReadAloudClick",{value:null});',
+    'Reflect.deleteProperty(globalThis,"codexLinuxReadAloudClick");',
+    'Reflect.set(globalThis,"codexLinuxReadAloudClick",null);',
+    'function rebind(){exported=other;}rebind();',
+    'function rebind(){req=other;}rebind();',
+    'function rebind(){modules={};}rebind();',
+    'function rebind(){exported??=other;}rebind();',
+    'function rebind(){(exported)=other;}rebind();',
+    'function rebind(){++(exported);}rebind();',
+    'function rebind(){++exported;}rebind();',
+    'function rebind(){({value:exported}=other);}rebind();',
+    'function rebind(){[exported]=other;}rebind();',
+    'function rebind(){for(exported of other){}}rebind();',
+    'function rebind(){\\u0065xported=other;}rebind();',
+    'const rebind=()=>exported=other;rebind();',
+  ]) {
+    const raw = runtimeEntryFixture();
+    const source = !tail.includes("rebind") ? applyRuntimeEntryPatch(raw) + "\n" + tail
+      : raw.replace('var exported=req;', 'var exported=req;' + tail);
+    assertRuntimeAuthorityRefusal(t, source, tail);
   }
 });
 
-test("assistant runtime descriptor reports applied then already-applied for the current contract", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-read-aloud-current-"));
-  try {
-    const assetsDir = path.join(root, "webview", "assets");
-    fs.mkdirSync(assetsDir, { recursive: true });
-    const assetPath = path.join(
-      assetsDir,
-      "sites-end-resource-current.js",
-    );
-    fs.writeFileSync(assetPath, assistantRenderFixture({ jsxVar: "DX", component: "Jft" }).source);
-    const descriptor = featurePatches.find((patch) => patch.id === "assistant-runtime");
-    const descriptors = normalizePatchDescriptors([
-      { ...descriptor, featureId: "read-aloud", sourceKind: "feature" },
-    ]);
-    const firstReport = createPatchReport();
-    const secondReport = createPatchReport();
+test("UP61 authority V3 refuses optional owned deletion from the independent witness", t => {
+  assertRuntimeAuthorityRefusal(t, applyRuntimeEntryPatch(runtimeEntryFixture()) + '\ndelete globalThis?.codexLinuxReadAloudClick;', "optional owned delete");
+});
 
-    applyWebviewAssetPatchDescriptors(root, descriptors, {}, firstReport);
-    applyWebviewAssetPatchDescriptors(root, descriptors, {}, secondReport);
+test("UP61 authority V3 refuses nested shift write from the independent witness", t => {
+  const source = runtimeEntryFixture().replace('var exported=req;', 'var exported=req;function rebind(){exported<<=1;}rebind();');
+  assertRuntimeAuthorityRefusal(t, source, "nested shift write");
+});
 
-    const patched = fs.readFileSync(assetPath, "utf8");
-    assert.equal((patched.match(/codex-linux-read-aloud-button/g) ?? []).length, 2);
-    assert.doesNotMatch(patched, /codexLinuxReadAloudVersion/);
-    assert.equal(firstReport.patches[0].status, "applied");
-    assert.equal(secondReport.patches[0].status, "already-applied");
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+test("UP61 authority V3 covers the complete assignment and update operator table", t => {
+  const assignments = ["=", "+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", ">>>=", "&=", "^=", "|=", "&&=", "||=", "??="];
+  const expressions = assignments.map(operator => target => target + operator + "1");
+  expressions.push(target => "++" + target, target => "--" + target, target => target + "++", target => target + "--");
+  for (const expression of expressions) {
+    const nativeTail = 'function rebind(){' + expression("exported") + ';}rebind();';
+    assertRuntimeAuthorityRefusal(t, runtimeEntryFixture().replace('var exported=req;', 'var exported=req;' + nativeTail), nativeTail);
+    for (const target of ['globalThis.codexLinuxReadAloudClick', 'globalThis["codexLinuxReadAloudClick"]']) {
+      const tail = expression(target) + ";";
+      assertRuntimeAuthorityRefusal(t, applyRuntimeEntryPatch(runtimeEntryFixture()) + "\n" + tail, tail);
+    }
+    const fixture = runtimeAppFixture(t), shadow = 'function shadow(exported){' + expression("exported") + ';}';
+    for (const name of ["main.js", "detached.js"]) fs.appendFileSync(path.join(fixture.assets, name), "\n" + shadow);
+    assert.equal(fixture.run().status, "applied", shadow);
+    assert.equal(fixture.run().status, "already-applied", shadow);
   }
+});
+
+test("UP61 authority V3 covers optional static owned deletes and grouped Unicode targets", t => {
+  for (const tail of [
+    'delete globalThis?.codexLinuxReadAloudClick;',
+    'delete window?.codexLinuxReadAloudClick;',
+    'delete self?.codexLinuxReadAloudClick;',
+    'delete globalThis?.["codexLinuxReadAloudClick"];',
+    "delete window?.['codexLinuxReadAloudClick'];",
+    'delete self?.[`codexLinuxReadAloudClick`];',
+    'delete (globalThis?.codexLinuxReadAloudClick);',
+    'delete ((globalThis))?.codexLinuxReadAloudClick;',
+    'delete ((globalThis))?.["codexLinuxReadAloudClick"];',
+    'delete globalThis?.\\u0063odexLinuxReadAloudClick;',
+    'delete globalThis?.["\\u0063odexLinuxReadAloudClick"];',
+    'delete globalThis?.["\\x63odexLinuxReadAloudClick"];',
+  ]) assertRuntimeAuthorityRefusal(t, applyRuntimeEntryPatch(runtimeEntryFixture()) + "\n" + tail, tail);
+});
+
+test("UP61 authority V3 preserves destructuring and iteration target write boundaries", t => {
+  for (const expression of [
+    '({exported}=other)',
+    '({value:exported}=other)',
+    '[exported]=other',
+    '[exported=other]=values',
+    'for(exported of values){}',
+    'for(exported in values){}',
+    '(exported)++',
+    '++(exported)',
+    '\\u0065xported<<=1',
+  ]) {
+    const tail = 'function rebind(){' + expression + ';}rebind();';
+    assertRuntimeAuthorityRefusal(t, runtimeEntryFixture().replace('var exported=req;', 'var exported=req;' + tail), tail);
+  }
+  for (const tail of [
+    '({value:globalThis.codexLinuxReadAloudClick}=other);',
+    '[globalThis.codexLinuxReadAloudClick]=other;',
+    '[globalThis["codexLinuxReadAloudClick"],other]=values;',
+    'for([globalThis.codexLinuxReadAloudClick] of values){}',
+  ]) assertRuntimeAuthorityRefusal(t, applyRuntimeEntryPatch(runtimeEntryFixture()) + "\n" + tail, tail);
+});
+
+test("UP61 authority permits local binding shadows and inert or foreign owned-name data", () => {
+  for (const tail of [
+    'function shadow(exported){exported=other;}',
+    'function shadow({value:exported}){exported<<=1;}',
+    'const shadow=({value:exported})=>exported>>=1;',
+    'function shadow(){try{}catch({message:exported}){exported>>>=1;}}',
+    'const values=[globalThis.codexLinuxReadAloudClick];',
+    'const values={value:globalThis.codexLinuxReadAloudClick};',
+    'let local;({[globalThis.codexLinuxReadAloudClick]:local}=other);',
+    'let local;[local=globalThis.codexLinuxReadAloudClick]=other;',
+    'let local;[local=(globalThis.codexLinuxReadAloudClick)]=other;',
+    'let local;[local=(globalThis["codexLinuxReadAloudClick"])]=other;',
+    'function shadow(){let {value:exported}=other;exported<<=1;}',
+    'function shadow(){let [exported]=other;exported>>>=1;}',
+    'const read=()=>exported<<1;',
+    'globalThis.codexLinuxReadAloudClick===undefined;',
+    'globalThis.codexLinuxReadAloudClick<=1;',
+    'globalThis.otherFeature<<=1;',
+    '/*delete globalThis?.codexLinuxReadAloudClick; exported<<=1;*/',
+    'const inert="delete globalThis?.codexLinuxReadAloudClick; exported<<=1;";',
+    'function shadow(){let exported;exported=other;}',
+    'function shadow(){var exported;{exported=other;}}',
+    'function shadow(){if(true){let exported;exported=other;}}',
+    'function shadow(){try{}catch(exported){exported=other;}}',
+    'function shadow(){for(let exported of other){exported=null;}}',
+    'function shadow(){for(let exported=0;exported<2;exported++){exported=1;}}',
+    'const shadow=(exported)=>exported=other;',
+    'const shadow=(exported=null)=>exported=other;',
+    'const shadow=exported=>()=>exported=other;',
+    'const shadow=function exported(){exported=other;};',
+    'function shadow(req,modules){req=other;modules={};}',
+    'class Shadow{static{var exported;exported=null;}}',
+    '/*delete globalThis.codexLinuxReadAloudClick;*/',
+    'const text="delete globalThis.codexLinuxReadAloudClick;";',
+    'globalThis.otherFeature=null;',
+    'Object.defineProperty(globalThis,"otherFeature",{value:null});',
+  ]) {
+    const source = runtimeEntryFixture() + "\n" + tail;
+    const result = captureWarnings(() => applyRuntimeEntryPatch(source));
+    assert.notEqual(result.result, source, tail);
+    assert.equal(result.warnings.length, 0, tail);
+    assert.equal(applyRuntimeEntryPatch(result.result), result.result, tail);
+  }
+});
+
+test("webview runtime descriptor commits the coherent two-entry cohort and validates warm dependencies", t => {
+  const fixture = runtimeAppFixture(t), before = runtimeFixtureBytes(fixture);
+  assert.equal(fixture.run().status, "applied");
+  assert.equal(fixture.run().status, "already-applied");
+  for (const name of ["main.js", "detached.js"]) {
+    const text = fs.readFileSync(path.join(fixture.assets, name), "utf8");
+    assert.equal(text.split('globalThis.codexLinuxReadAloudVersion=VERSION').length - 1, 1);
+  }
+  assert.equal(fs.readFileSync(path.join(fixture.assets, "shared.js"), "utf8"), before['webview/assets/shared.js']);
+  const otherRuntime = '\n;(()=>{globalThis.otherFeature=true})();';
+  for (const name of ["main.js", "detached.js"]) fs.appendFileSync(path.join(fixture.assets, name), otherRuntime);
+  assert.equal(fixture.run().status, "already-applied");
+  for (const name of ["main.js", "detached.js"]) assert.ok(fs.readFileSync(path.join(fixture.assets, name), "utf8").endsWith(otherRuntime));
+});
+
+test("webview runtime descriptor resolves a startup producer registered by its imported chunk", t => {
+  const fixture = runtimeAppFixture(t);
+  for (const name of ["main.js", "detached.js"]) {
+    const file = path.join(fixture.assets, name);
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace('Main(e,t,r){t.ready=true},', ''));
+  }
+  fs.writeFileSync(path.join(fixture.assets, "shared.js"), 'export const __rspack_esm_ids=["1"];export const __webpack_modules__={Main(e,t,r){t.ready=true}};');
+  assert.equal(fixture.run().status, "applied");
+  assert.equal(fixture.run().status, "already-applied");
+});
+
+test("webview runtime descriptor refuses mixed partial orphan and bad native dependency cohorts before writes", t => {
+  for (const kind of ["mixed", "wrong-handler", "orphan", "hidden-peer", "hidden-single", "hidden-template", "hidden-unicode", "hidden-hex", "missing-import", "wrong-startup", "html-role", "duplicate-html"]) {
+    const fixture = runtimeAppFixture(t);
+    if (["mixed", "wrong-handler"].includes(kind)) {
+      fs.writeFileSync(path.join(fixture.assets, "main.js"), applyRuntimeEntryPatch(runtimeEntryFixture()));
+      if (kind === "wrong-handler") fs.writeFileSync(path.join(fixture.assets, "main.js"), fs.readFileSync(path.join(fixture.assets, "main.js"), "utf8").replace('const METHOD="linux-read-aloud"', 'const METHOD="wrong-handler"'));
+    } else if (kind === "orphan") fs.writeFileSync(path.join(fixture.assets, "extra.js"), applyIndexRuntimePatch(""));
+    else if (kind.startsWith("hidden-")) {
+      const peers = {
+        "hidden-peer": 'globalThis["codexLinuxReadAloudVersion"]="v6";',
+        "hidden-single": "globalThis['codexLinuxReadAloudClick']=()=>{};",
+        "hidden-template": 'globalThis[`codexLinuxReadAloudSetup`]=()=>{};',
+        "hidden-unicode": 'globalThis.\\u0063odexLinuxReadAloudClick=()=>{};',
+        "hidden-hex": "globalThis['\\x63odexLinuxReadAloudSetup']=()=>{};",
+      };
+      fs.writeFileSync(path.join(fixture.assets, "extra.js"), peers[kind]);
+    }
+    else if (kind === "missing-import") fs.writeFileSync(path.join(fixture.assets, "main.js"), runtimeEntryFixture().replace('req.C(shared);', 'other.C(shared);'));
+    else if (kind === "wrong-startup") fs.writeFileSync(path.join(fixture.assets, "main.js"), runtimeEntryFixture().replace('()=>req("Main")', '()=>req("Other")'));
+    else if (kind === "html-role") fs.writeFileSync(path.join(fixture.root, "webview/detached-window.html"), '<script type="module" src="/assets/main.js"></script>');
+    else fs.writeFileSync(path.join(fixture.root, "webview/index.html"), '<script type="module" src="/assets/main.js" src="/assets/detached.js"></script>');
+    const bytes = runtimeFixtureBytes(fixture), oldWrite = fs.writeFileSync;
+    let writes = 0;
+    fs.writeFileSync = (...args) => { writes++; return oldWrite(...args); };
+    try { assert.equal(fixture.run().status, "skipped-optional", kind); }
+    finally { fs.writeFileSync = oldWrite; }
+    assert.equal(writes, 0, kind);
+    assertRuntimeFixtureBytes(fixture, bytes);
+  }
+});
+
+test("webview runtime descriptor rolls back partial writes and protects changed read dependencies", t => {
+  for (const kind of ["partial", "dependency-race", "html-race", "inventory-race"]) {
+    const fixture = runtimeAppFixture(t), before = runtimeFixtureBytes(fixture), oldWrite = fs.writeFileSync;
+    let written = false;
+    fs.writeFileSync = (file, bytes, ...options) => {
+      if (String(file).endsWith('/main.js') && !written) {
+        written = true;
+        if (kind === "partial") { oldWrite(file, "partial"); throw Error("inert partial write"); }
+        if (kind === "html-race") oldWrite(path.join(fixture.root, "webview/index.html"), before["webview/index.html"] + "<!-- concurrent -->");
+        else if (kind === "dependency-race") oldWrite(path.join(fixture.assets, "shared.js"), before['webview/assets/shared.js'] + "\n// concurrent");
+        else oldWrite(path.join(fixture.assets, "extra.js"), 'globalThis.codexLinuxReadAloudVersion="unexpected";');
+      }
+      return oldWrite(file, bytes, ...options);
+    };
+    try { assert.equal(fixture.run().status, "skipped-optional", kind); }
+    finally { fs.writeFileSync = oldWrite; }
+    assert.equal(written, true);
+    assert.equal(fs.readFileSync(path.join(fixture.assets, "main.js"), "utf8"), before['webview/assets/main.js']);
+    assert.equal(fs.readFileSync(path.join(fixture.assets, "detached.js"), "utf8"), before['webview/assets/detached.js']);
+  }
+});
+
+test("webview runtime descriptor detects warm inventory entry HTML and dependency races without own writes", t => {
+  for (const kind of ["inventory", "entry", "html", "dependency"]) {
+    const fixture = runtimeAppFixture(t);
+    assert.equal(fixture.run().status, "applied");
+    const oldReadDirectory = fs.readdirSync, oldWrite = fs.writeFileSync;
+    let scans = 0, writes = 0;
+    fs.readdirSync = (directory, ...options) => {
+      if (String(directory) === fixture.assets && ++scans === 2) {
+        const file = kind === "inventory" ? path.join(fixture.assets, "extra.js")
+          : kind === "entry" ? path.join(fixture.assets, "main.js")
+          : kind === "html" ? path.join(fixture.root, "webview/index.html")
+          : path.join(fixture.assets, "shared.js");
+        oldWrite(file, kind === "inventory" ? "const peer=true;" : fs.readFileSync(file, "utf8") + "\n/* concurrent */");
+      }
+      return oldReadDirectory(directory, ...options);
+    };
+    fs.writeFileSync = (...args) => { writes++; return oldWrite(...args); };
+    try { assert.equal(fixture.run().status, "skipped-optional", kind); }
+    finally { fs.readdirSync = oldReadDirectory; fs.writeFileSync = oldWrite; }
+    assert.equal(scans, 2, kind);
+    assert.equal(writes, 0, kind);
+  }
+});
+
+test("webview runtime descriptor propagates fatal failure when rollback cannot restore an entry", t => {
+  const fixture = runtimeAppFixture(t), oldWrite = fs.writeFileSync;
+  let attempts = 0;
+  fs.writeFileSync = (file, bytes, ...options) => {
+    if (String(file).endsWith("/main.js")) {
+      if (++attempts === 1) oldWrite(file, "partial");
+      throw Error("inert write and restoration failure");
+    }
+    return oldWrite(file, bytes, ...options);
+  };
+  try { assert.throws(() => fixture.run(), /rollback could not restore original bytes/u); }
+  finally { fs.writeFileSync = oldWrite; }
+  assert.equal(attempts, 2);
+});
+
+function assistantAppFixture(t, { source = assistantRenderFixture().source, installRuntime = true } = {}) {
+  const fixture = runtimeAppFixture(t);
+  if (installRuntime) assert.equal(fixture.run().status, "applied");
+  const owner = path.join(fixture.assets, "assistant.js");
+  fs.writeFileSync(owner, source);
+  fs.writeFileSync(path.join(fixture.assets, "jsx.js"), 'export const __rspack_esm_ids=[9];export const __webpack_modules__={Jsx(e,t,n){e.exports=n("Delegate")}};');
+  fs.writeFileSync(path.join(fixture.assets, "delegate.js"), 'export const __rspack_esm_ids=[10];export const __webpack_modules__={Delegate(e,t){var n=Symbol.for("react.transitional.element");function i(e,t,i){var r=null;if(void 0!==i&&(r=""+i),void 0!==t.key&&(r=""+t.key),"key"in t)for(var o in i={},t)"key"!==o&&(i[o]=t[o]);else i=t;return{$$typeof:n,type:e,key:r,ref:void 0!==(t=i.ref)?t:null,props:i}}t.Fragment=Symbol.for("react.fragment"),t.jsx=i,t.jsxs=i}};');
+  const descriptor = featurePatches.find(patch => patch.id === "assistant-runtime");
+  const selected = normalizePatchDescriptors([{ ...descriptor, featureId: "read-aloud", sourceKind: "feature" }]);
+  return { ...fixture, owner, runAssistant(options = {}) {
+    const report = createPatchReport();
+    applyExtractedAppPatchDescriptors(fixture.root, selected, options, report, "extracted-app:pre-webview");
+    return report.patches[0];
+  } };
+}
+
+test("assistant runtime descriptor fails soft and atomically when the current render contract drifts", t => {
+  const fixture = assistantAppFixture(t, { source: 'console.log("assistant render contract moved");' });
+  const before = fs.readFileSync(fixture.owner, "utf8"), runtime = runtimeFixtureBytes(fixture);
+  const report = fixture.runAssistant();
+  assert.equal(report.status, "skipped-optional");
+  assert.equal(fs.readFileSync(fixture.owner, "utf8"), before);
+  assertRuntimeFixtureBytes(fixture, runtime);
+});
+
+test("assistant runtime descriptor reports applied then already-applied for the current contract", t => {
+  const fixture = assistantAppFixture(t, { source: assistantRenderFixture({ jsxVar: "DX", component: "Jft.F" }).source });
+  const runtime = runtimeFixtureBytes(fixture);
+  assert.equal(fixture.runAssistant().status, "applied");
+  assert.equal(fixture.runAssistant().status, "already-applied");
+  const patched = fs.readFileSync(fixture.owner, "utf8");
+  assert.equal((patched.match(/codex-linux-read-aloud-button/g) ?? []).length, 2);
+  assert.doesNotMatch(patched, /codexLinuxReadAloudVersion/);
+  assertRuntimeFixtureBytes(fixture, runtime);
 });
 
 function generalSettingsFixture({ page = "s=(0,n.jsxs)(eG.P,{title:t,children:[e,a]})", extra = "" } = {}) {
@@ -1801,7 +2096,8 @@ test(
     assert.equal(routed.length, 1);
 
     const assetsDir = path.join(root, "webview", "assets");
-    for (const descriptor of featurePatches.filter((patch) => patch.phase === "webview-asset")) {
+    for (const descriptor of featurePatches.filter((patch) => patch.phase === "webview-asset" || patch.id === "assistant-runtime")) {
+      const apply = descriptor.id === "assistant-runtime" ? applyAssistantRenderPatch : descriptor.apply;
       const candidates = findWebviewAssetsContaining(root, descriptor.assetNeedles);
       const targets = descriptor.assetMatch == null
         ? candidates
@@ -1810,11 +2106,446 @@ test(
       if (descriptor.assetMatch != null) assert.equal(targets.length, 1, descriptor.id);
       for (const name of targets) {
         const source = fs.readFileSync(path.join(assetsDir, name), "utf8");
-        const { result, warnings } = captureWarnings(() => descriptor.apply(source));
+        const { result, warnings } = captureWarnings(() => apply(source));
         assert.deepEqual(warnings, [], `${descriptor.id} ${name}`);
         assert.notEqual(result, source, `${descriptor.id} ${name}`);
-        assert.equal(descriptor.apply(result), result, `${descriptor.id} ${name}`);
+        assert.equal(apply(result), result, `${descriptor.id} ${name}`);
       }
     }
   },
 );
+
+function readAloudInertRuntime({ bridge = true } = {}) {
+  const { FakeElement, document } = fakeDocument(), listeners = {}, requests = [], events = [], timers = new Map();
+  let now = 0, sequence = 0;
+  const globals = {}, setTimer = (callback, delay = 0) => { const id = ++sequence; timers.set(id, { at: now + delay, callback }); return id; };
+  const window = {
+    addEventListener(type, callback) { (listeners[type] ??= []).push(callback); },
+    dispatchEvent(event) {
+      events.push(event);
+      if (event.type === "codex-message-from-view" && !event.__codexForwardedViaBridge && event.detail.type === "fetch") requests.push(event.detail);
+    },
+  };
+  if (bridge) window.electronBridge = { sendMessageFromView(payload) { if (payload.type === "fetch") requests.push(payload); return Promise.resolve(); } };
+  class CustomEvent { constructor(type, options) { this.type = type; this.detail = options.detail; } }
+  const install = () => new Function("window", "document", "globalThis", "CustomEvent", "setTimeout", "clearTimeout", applyIndexRuntimePatch(""))(
+    window, document, globals, CustomEvent, setTimer, id => timers.delete(id),
+  );
+  install();
+  return { globals, requests, events, listeners, document, timers, install,
+    button: () => new FakeElement("button"),
+    reply(request, body = {}, extra = {}) {
+      for (const listener of listeners.message ?? []) listener({ data: { type: "fetch-response", responseType: "success", status: 200, requestId: request.requestId, bodyJsonString: JSON.stringify(body), ...extra } });
+    },
+    async advance(milliseconds) {
+      const until = now + milliseconds;
+      for (;;) {
+        const next = [...timers].filter(([, timer]) => timer.at <= until).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;
+        timers.delete(next[0]); now = next[1].at; next[1].callback(); await settlePromises();
+      }
+      now = until; await settlePromises();
+    },
+  };
+}
+
+test("UP61 bootstrap and repeated install register one silent realm runtime", () => {
+  const r = readAloudInertRuntime();
+  r.install();
+  assert.equal(r.requests.length, 0);
+  assert.equal(r.listeners.message.length, 1);
+  assert.equal(r.document.head.children.length, 1);
+  for (const name of ["Click", "Setup", "MountSettings", "GetSetting", "SetSetting"]) assert.equal(typeof r.globals['codexLinuxReadAloud' + name], "function");
+});
+
+for (const bridge of [true, false]) {
+  test(`UP61 explicit click uses one cleaned local request and settles owned timers with bridge=${bridge}`, async () => {
+    const r = readAloudInertRuntime({ bridge }), button = r.button();
+    const click = r.globals.codexLinuxReadAloudClick({}, '**hello** [world](https://example.invalid)\n```code```', 'conversation-one', button);
+    assert.equal(r.requests.length, 1);
+    const request = r.requests[0];
+    assert.deepEqual(JSON.parse(request.body), { action: "speak", source: "button", text: "hello world\n code block." });
+    assert.equal(request.hostId, "local"); assert.equal(request.method, "POST"); assert.equal(request.url, "vscode://codex/linux-read-aloud");
+    assert.match(request.requestId, /^codex-linux-read-aloud-/u);
+    assert.equal(r.events.find(event => event.detail.type === "fetch").__codexForwardedViaBridge === true, bridge);
+    r.reply(request, { spoken: true }); await click;
+    assert.equal(button.dataset.codexLinuxReadAloudState, "speaking");
+    assert.equal(r.timers.size, 1, "Only the current speech estimate remains after its response");
+    await r.globals.codexLinuxReadAloudClick({}, "ignored", 'conversation-one', button);
+    assert.equal(button.dataset.codexLinuxReadAloudState, "ready");
+    assert.deepEqual(JSON.parse(r.requests[1].body), { action: "stop" });
+    r.reply(r.requests[1]); await settlePromises();
+    r.reply(request, { spoken: true });
+    assert.equal(button.dataset.codexLinuxReadAloudState, "ready");
+    assert.equal(r.timers.size, 0);
+  });
+}
+
+test("UP61 timeout malformed error and stale replies leave usable request state", async () => {
+  for (const outcome of ["timeout", "malformed", "error"]) {
+    const r = readAloudInertRuntime(), button = r.button();
+    const pending = r.globals.codexLinuxReadAloudClick({}, "hello", "conv", button);
+    r.reply({ requestId: "unknown" }, { spoken: true });
+    assert.equal(button.dataset.codexLinuxReadAloudState, "loading");
+    if (outcome === "timeout") await r.advance(4000);
+    else if (outcome === "malformed") r.reply(r.requests[0], null, { bodyJsonString: "{" });
+    else r.reply(r.requests[0], null, { responseType: "error", error: "inert failure" });
+    await pending;
+    assert.equal(button.dataset.codexLinuxReadAloudState, "error");
+    await r.advance(1500);
+    assert.equal(button.dataset.codexLinuxReadAloudState, "ready");
+    r.reply(r.requests[0], { spoken: true });
+    assert.equal(button.dataset.codexLinuxReadAloudState, "ready");
+    assert.equal(r.timers.size, 0);
+  }
+});
+
+test("UP61 newer explicit speech owns button state and late response or timer cannot replace it", async () => {
+  const r = readAloudInertRuntime(), first = r.button(), second = r.button();
+  const old = r.globals.codexLinuxReadAloudClick({}, "first", "old-conv", first);
+  const current = r.globals.codexLinuxReadAloudClick({}, "x".repeat(9000), "new-conv", second);
+  assert.equal(JSON.parse(r.requests[1].body).text.length, 8000);
+  r.reply(r.requests[1], { spoken: true }); await current;
+  r.reply(r.requests[0], { spoken: true }); await old;
+  assert.equal(first.dataset.codexLinuxReadAloudState, "ready");
+  assert.equal(second.dataset.codexLinuxReadAloudState, "speaking");
+  assert.equal(r.timers.size, 1);
+  await r.advance(120000);
+  assert.equal(second.dataset.codexLinuxReadAloudState, "ready");
+  assert.equal(r.requests.length, 2);
+});
+
+test("UP61 out-of-order failures and conversation stop cannot reclaim newer button state", async () => {
+  for (const outcome of ["old-error", "new-error", "conversation-stop"]) {
+    const r = readAloudInertRuntime(), first = r.button(), second = r.button();
+    const old = r.globals.codexLinuxReadAloudClick({}, "first", "old", first);
+    if (outcome === "conversation-stop") {
+      let stopped = 0;
+      r.globals.codexLinuxConversationIsSpeaking = () => true;
+      r.globals.codexLinuxConversationStopSpeaking = () => stopped++;
+      await r.globals.codexLinuxReadAloudClick({}, "stop", "old", first);
+      assert.equal(stopped, 1);
+      r.reply(r.requests[0], { spoken: true }); await old;
+      assert.equal(first.dataset.codexLinuxReadAloudState, "ready");
+      assert.equal(r.requests.length, 1);
+      assert.equal(r.timers.size, 0);
+      continue;
+    }
+    const current = r.globals.codexLinuxReadAloudClick({}, "second", "new", second);
+    if (outcome === "new-error") r.reply(r.requests[1], null, { responseType: "error" });
+    else r.reply(r.requests[1], { spoken: true });
+    await current;
+    if (outcome === "old-error") r.reply(r.requests[0], null, { responseType: "error" });
+    else r.reply(r.requests[0], { spoken: true });
+    await old;
+    assert.equal(first.dataset.codexLinuxReadAloudState, "ready");
+    assert.equal(second.dataset.codexLinuxReadAloudState, outcome === "new-error" ? "error" : "speaking");
+    await r.advance(4000);
+    assert.equal(second.dataset.codexLinuxReadAloudState, "ready");
+    assert.equal(r.timers.size, 0);
+  }
+});
+
+test("UP61 timed-out replies and queued stale flash or estimate callbacks cannot alter a newer speech", async () => {
+  for (const outcome of ["timeout", "error", "estimate"]) {
+    const r = readAloudInertRuntime(), first = r.button(), second = r.button();
+    const old = r.globals.codexLinuxReadAloudClick({}, "first", "old", first);
+    if (outcome === "timeout") await r.advance(4000);
+    else r.reply(r.requests[0], outcome === "estimate" ? { spoken: true } : { spoken: false });
+    await old;
+    const staleCallback = [...r.timers.values()][0].callback;
+    const current = r.globals.codexLinuxReadAloudClick({}, "second", "new", second);
+    staleCallback();
+    assert.equal(second.dataset.codexLinuxReadAloudState, "loading");
+    r.reply(r.requests[1], { spoken: true }); await current;
+    r.reply(r.requests[0], { spoken: true });
+    staleCallback();
+    assert.equal(first.dataset.codexLinuxReadAloudState, "ready");
+    assert.equal(second.dataset.codexLinuxReadAloudState, "speaking");
+    await r.advance(4000);
+    assert.equal(second.dataset.codexLinuxReadAloudState, "ready");
+    assert.equal(r.timers.size, 0);
+  }
+});
+
+function assistantPrivateApi() {
+  const Module = require("node:module"), file = path.join(__dirname, "patch.js");
+  const loaded = new Module(file, module);
+  loaded.filename = file;
+  loaded.paths = Module._nodeModulePaths(__dirname);
+  let publications = 0;
+  loaded.require = function(request) {
+    const value = Module.prototype.require.call(this, request);
+    if (request !== "../../scripts/patches/lib/rspack-export-publication.js") return value;
+    return { ...value, findRspackExportPublication(...args) { publications++; return value.findRspackExportPublication(...args); } };
+  };
+  loaded._compile(fs.readFileSync(file, "utf8") + "\nmodule.exports.assistantInspect=inspectAssistantRenderContract;module.exports.assistantCacheSize=()=>assistantContractCache.size;", file);
+  return { ...loaded.exports, publications: () => publications };
+}
+
+test("assistant contribution cache copies facts, invalidates changed source and stays bounded after eviction", () => {
+  const api = assistantPrivateApi(), source = assistantRenderFixture().source;
+  const first = api.assistantInspect(source), count = api.publications();
+  assert.equal(first.state, "unpatched");
+  const native = first.candidates[0].match;
+  first.state = "polluted"; first.candidates[0].match = "polluted";
+  first.candidates[0].names.push("polluted"); first.candidates[0].fields.set("item", "polluted");
+  const second = api.assistantInspect(source);
+  assert.equal(api.publications(), count);
+  assert.equal(second.state, "unpatched"); assert.equal(second.candidates[0].match, native);
+  assert.equal(second.candidates[0].fields.get("item"), "o");
+  assert.equal(second.candidates[0].names.includes("polluted"), false);
+  const changed = source.replace("F:()=>render", "F:()=>renDer");
+  assert.equal(api.assistantInspect(changed).state, "invalid");
+  for (let index = 0; index < 5; index++) assert.equal(api.assistantInspect(source + `\nconst opaque${index}=true;`).state, "unpatched");
+  assert.equal(api.assistantCacheSize(), 4);
+  const before = api.publications();
+  assert.equal(api.assistantInspect(source).state, "unpatched");
+  assert.ok(api.publications() > before);
+});
+
+test("assistant normal warm cache still rejects changed JSX ABI and changed UP61 payload with zero writes", t => {
+  const fixture = assistantAppFixture(t);
+  assert.equal(fixture.runAssistant().status, "applied");
+  assert.equal(fixture.runAssistant().status, "already-applied");
+  const owner = fs.readFileSync(fixture.owner, "utf8"), delegate = path.join(fixture.assets, "delegate.js");
+  const original = fs.readFileSync(delegate, "utf8");
+  fs.writeFileSync(delegate, original.replace("t.jsx=i", "t.jsx=other"));
+  let writes = 0;
+  const writeFileSync = (file, bytes) => { writes++; fs.writeFileSync(file, bytes); };
+  assert.equal(fixture.runAssistant({ writeFileSync }).status, "skipped-optional");
+  assert.equal(writes, 0); assert.equal(fs.readFileSync(fixture.owner, "utf8"), owner);
+  fs.writeFileSync(delegate, original);
+  const runtime = path.join(fixture.assets, "main.js"), source = fs.readFileSync(runtime, "utf8");
+  fs.writeFileSync(runtime, source.replace('const METHOD="linux-read-aloud"', 'const METHOD="wrong-read-aloud"'));
+  assert.equal(fixture.runAssistant({ writeFileSync }).status, "skipped-optional");
+  assert.equal(writes, 0); assert.equal(fs.readFileSync(fixture.owner, "utf8"), owner);
+});
+
+function assistantExpressionHarness(expression, fixture, role) {
+  const vm = require("node:vm");
+  const jsx = {}, delegate = 'var n=Symbol.for("react.transitional.element");function i(e,t,i){var r=null;if(void 0!==i&&(r=""+i),void 0!==t.key&&(r=""+t.key),"key"in t)for(var o in i={},t)"key"!==o&&(i[o]=t[o]);else i=t;return{$$typeof:n,type:e,key:r,ref:void 0!==(t=i.ref)?t:null,props:i}}t.Fragment=Symbol.for("react.fragment"),t.jsx=i,t.jsxs=i';
+  vm.runInNewContext(`(function(e,t){${delegate}})`)({}, jsx);
+  const values = {}, calls = [], target = { role }, ref = () => {};
+  for (const match of `${fixture.sourceTurnCall}${fixture.liveTurnCall}`.matchAll(/:([A-Za-z_$][\w$]*)(?=[,}])/gu)) values[match[1]] = "value-" + match[1];
+  Object.assign(values, { s: jsx, eA: { F: "NativeAssistant" }, p: "conversation-a", o: { content: "source" }, n: { content: "live" }, a: "source copy", w: "live copy", roleKey: "native-key", roleRef: ref });
+  values.codexLinuxReadAloudClick = (...args) => { calls.push(args); };
+  values.codexLinuxReadAloudSetup = () => { throw Error("unexpected setup"); };
+  const context = vm.createContext(values), element = vm.runInContext(`(${expression})`, context);
+  return { context, element, calls, target, ref };
+}
+
+test("assistant source and live buttons keep original child props/key/ref and stay silent until explicit click", () => {
+  const vm = require("node:vm");
+  const fixture = assistantRenderFixture();
+  const source = fixture.source.replace(fixture.sourceTurnCall, fixture.sourceTurnCall.replace("item:o,", 'item:o,key:roleKey,ref:roleRef,opaque:{tag:"native",values:[1,2]},'));
+  const api = assistantPrivateApi(), raw = api.assistantInspect(source), patched = api.applyAssistantRenderPatch(source);
+  assert.equal(raw.state, "unpatched");
+  for (const row of raw.candidates) {
+    const prefix = `/*codex-linux-read-aloud-assistant:${row.role}*/`;
+    const start = patched.indexOf(prefix), native = patched.indexOf(row.match, start), end = native + row.match.length + 1;
+    assert.ok(start >= 0 && native > start);
+    const expression = patched.slice(start, end);
+    const harness = assistantExpressionHarness(expression, fixture, row.role);
+    assert.equal(harness.calls.length, 0);
+    const original = vm.runInContext(`(${row.match})`, harness.context), child = harness.element.props.children[0];
+    assert.equal(child.type, original.type); assert.equal(child.key, original.key); assert.equal(child.ref, original.ref);
+    assert.deepEqual(Object.keys(child.props), Object.keys(original.props));
+    for (const key of Object.keys(original.props)) {
+      if (key === "opaque") assert.equal(JSON.stringify(child.props[key]), JSON.stringify(original.props[key]));
+      else assert.equal(child.props[key], original.props[key], key);
+    }
+    const item = child.props.item, copy = child.props.assistantCopyText, conversation = child.props.conversationId;
+    const button = harness.element.props.children[1].props.children;
+    vm.runInContext('o={content:"changed"};n={content:"changed"};a="changed";w="changed";p="conversation-b";', harness.context);
+    let stopped = 0;
+    button.props.onClick({ stopPropagation() { stopped++; }, currentTarget: harness.target });
+    assert.equal(stopped, 1); assert.equal(harness.calls.length, 1);
+    assert.deepEqual(harness.calls[0], [item, copy, conversation, harness.target]);
+    const rerender = assistantExpressionHarness(expression, fixture, row.role);
+    assert.equal(rerender.calls.length, 0);
+  }
+});
+
+test("assistant published owner and captured namespace gates reject orphan, shadowed and reassigned code", t => {
+  const raw = assistantRenderFixture().source;
+  for (const source of [
+    raw.replace("F:()=>render", "F:()=>Other").replace("function render(", "function Other(){return null}function render("),
+    raw.replace('s=n("Jsx")', 's=other("Jsx")'),
+    raw.replace("function render(props){", "s=other;function render(props){"),
+    raw.replace("function render(props){", String.raw`\u0073=other;function render(props){`),
+    raw.replace("function render(props){", "eA=other;function render(props){"),
+    raw.replace("function render(props){", "function render(props){let s=other;"),
+    raw.replace("function render(props){", "function render(props){let eA=other;"),
+    raw.replace("function render(props){", "function render(props){let globalThis=other;"),
+    raw.replace("F:()=>row", "F:()=>Other").replace("function row(", "function Other(){return null}function row("),
+  ]) {
+    const unchanged = captureWarnings(() => applyAssistantRenderPatch(source));
+    assert.equal(unchanged.result, source);
+    const fixture = assistantAppFixture(t, { source });
+    let writes = 0;
+    assert.equal(fixture.runAssistant({ writeFileSync() { writes++; } }).status, "skipped-optional");
+    assert.equal(writes, 0); assert.equal(fs.readFileSync(fixture.owner, "utf8"), source);
+  }
+});
+
+test("assistant canonical validation rejects changed, duplicate, eager and escaped owned contributions", t => {
+  const raw = assistantRenderFixture().source, patched = applyAssistantRenderPatch(raw);
+  const marker = '/*codex-linux-read-aloud-assistant:source-turn*/';
+  for (const source of [
+    patched.replace('.props.item,codexLinuxReadAloudChild.props.assistantCopyText', '.props.other,codexLinuxReadAloudChild.props.assistantCopyText'),
+    patched.replace('.props.conversationId,codexLinuxReadAloudEvent.currentTarget', '.props.other,codexLinuxReadAloudEvent.currentTarget'),
+    patched.replace('codexLinuxReadAloudEvent.stopPropagation(),', ''),
+    patched.replace('codexLinuxReadAloudEvent.currentTarget', 'codexLinuxReadAloudEvent.target'),
+    patched.replace('onClick:codexLinuxReadAloudEvent=>{', 'onClick:(codexLinuxReadAloudEvent=>{').replace('currentTarget)},children:', 'currentTarget)})({stopPropagation(){}}),children:'),
+    patched.replace(marker, marker + '/* opaque owned edit */'),
+    patched + ';globalThis.codexLinuxReadAloudClick?.(other,other,other,other);',
+    patched + String.raw`;globalThis["codexLinuxReadAloudCl\u0069ck"]?.(other);`,
+    raw.replace('function render(props){', 'function render(props){const orphan={className:"codex-linux-read-aloud-button"};'),
+  ]) {
+    assert.doesNotThrow(() => new (require("node:vm").Script)(source.replaceAll("export const ", "const ")));
+    const result = captureWarnings(() => applyAssistantRenderPatch(source));
+    assert.equal(result.result, source);
+    const fixture = assistantAppFixture(t, { source });
+    let writes = 0;
+    assert.equal(fixture.runAssistant({ writeFileSync() { writes++; } }).status, "skipped-optional");
+    assert.equal(writes, 0); assert.equal(fs.readFileSync(fixture.owner, "utf8"), source);
+  }
+  const inert = raw + '\n/*codex-linux-read-aloud-assistant:source-turn*/\nconst opaque="codexLinuxReadAloudClick";';
+  assert.notEqual(applyAssistantRenderPatch(inert), inert);
+});
+
+test("assistant physical producer copies are coherent and malformed component or ABI peers refuse every write", t => {
+  const fixture = assistantAppFixture(t), source = fs.readFileSync(fixture.owner, "utf8"), copy = path.join(fixture.assets, "assistant-copy.js");
+  fs.writeFileSync(copy, source);
+  assert.equal(fixture.runAssistant().status, "applied");
+  assert.equal(fixture.runAssistant().status, "already-applied");
+  const patched = fs.readFileSync(fixture.owner, "utf8");
+  fs.writeFileSync(copy, source);
+  let writes = 0;
+  assert.equal(fixture.runAssistant({ writeFileSync() { writes++; } }).status, "skipped-optional");
+  assert.equal(writes, 0); assert.equal(fs.readFileSync(fixture.owner, "utf8"), patched);
+  fs.writeFileSync(fixture.owner, source);
+  for (const damaged of [
+    source.replace('F:()=>render', 'F:()=>missing'),
+    source.replace('sourceTurnId:', 'retiredSourceTurnId:'),
+    source.replace('F:()=>row', 'Other:()=>row'),
+  ]) {
+    fs.writeFileSync(copy, damaged); writes = 0;
+    assert.equal(fixture.runAssistant({ writeFileSync() { writes++; } }).status, "skipped-optional");
+    assert.equal(writes, 0); assert.equal(fs.readFileSync(fixture.owner, "utf8"), source); assert.equal(fs.readFileSync(copy, "utf8"), damaged);
+  }
+});
+
+test("assistant two-copy writes roll back interruption and propagate unverified restoration", t => {
+  for (const fatal of [false, true]) {
+    const fixture = assistantAppFixture(t), source = fs.readFileSync(fixture.owner, "utf8"), copy = path.join(fixture.assets, "assistant-copy.js");
+    fs.writeFileSync(copy, source);
+    let attempts = 0, failed = false;
+    const options = { writeFileSync(file, bytes) {
+      if (++attempts === 2) { failed = true; fs.writeFileSync(file, "partial assistant"); throw Error("interrupted assistant write"); }
+      if (fatal && failed && String(file).endsWith("assistant-copy.js")) throw Error("assistant restoration unavailable");
+      fs.writeFileSync(file, bytes);
+    } };
+    if (fatal) assert.throws(() => fixture.runAssistant(options), /rollback could not restore original bytes/);
+    else {
+      assert.equal(fixture.runAssistant(options).status, "skipped-optional");
+      assert.equal(fs.readFileSync(fixture.owner, "utf8"), source); assert.equal(fs.readFileSync(copy, "utf8"), source);
+      assert.equal(fixture.runAssistant().status, "applied");
+    }
+  }
+});
+
+test("assistant readset rejects dependency or inventory races between physical writes", t => {
+  for (const kind of ["abi", "runtime", "inventory"]) {
+    const fixture = assistantAppFixture(t), source = fs.readFileSync(fixture.owner, "utf8"), copy = path.join(fixture.assets, "assistant-copy.js");
+    fs.writeFileSync(copy, source);
+    let changed = false;
+    const report = fixture.runAssistant({ writeFileSync(file, bytes) {
+      fs.writeFileSync(file, bytes);
+      if (changed) return;
+      changed = true;
+      if (kind === "inventory") fs.writeFileSync(path.join(fixture.assets, "unexpected.js"), "const unrelated=true;");
+      else fs.appendFileSync(path.join(fixture.assets, kind === "abi" ? "delegate.js" : "main.js"), "/* concurrent dependency change */");
+    } });
+    assert.equal(report.status, "skipped-optional");
+    assert.equal(fs.readFileSync(fixture.owner, "utf8"), source); assert.equal(fs.readFileSync(copy, "utf8"), source);
+  }
+});
+
+test("assistant full delegate chunk Symbol authority rejects unchanged factories with cold and warm owner facts", t => {
+  const prefixes = [
+    'const Symbol={for:value=>value};',
+    'let Symbol={for:value=>value};',
+    'var Symbol={for:value=>value};',
+    'function Symbol(){}',
+    'class Symbol{}',
+    String.raw`const \u0053ymbol={for:value=>value};`,
+    'Symbol={for:value=>value};',
+    String.raw`\u0053ymbol={for:value=>value};`,
+    'Symbol.for=value=>value;',
+    'Symbol["for"]=value=>value;',
+    String.raw`Symbol["\x66or"]||=value=>value;`,
+    String.raw`\u0053ymbol.\u0066or=value=>value;`,
+    '++Symbol.for;',
+    'delete Symbol?.for;',
+    'globalThis.Symbol={for:value=>value};',
+    'window["Symbol"]={for:value=>value};',
+    'self.Symbol.for^=1;',
+    String.raw`globalThis["\u0053ymbol"]["\x66or"]=value=>value;`,
+    String.raw`\u0067lobalThis.\u0053ymbol={for:value=>value};`,
+    'delete (globalThis.Symbol).for;',
+    '[Symbol.for]=[];',
+    '({x:globalThis.Symbol}={});',
+    'Symbol/*native authority*/.for/*write*/=value=>value;',
+    'Object.defineProperty(Symbol,"for",{value:value=>value});',
+    'Object["defineProperty"](globalThis,"Symbol",{value:{for:value=>value}});',
+    'Reflect.set(Symbol,"for",value=>value);',
+    'Reflect["deleteProperty"](globalThis.Symbol,"for");',
+    'Reflect.defineProperty(window,"Symbol",{value:{for:value=>value}});',
+    String.raw`Object["\u0064efineProperty"](\u0053ymbol,"\x66or",{value:value=>value});`,
+    String.raw`Reflect.\u0073et(self["\u0053ymbol"],"\u0066or",value=>value);`,
+    'function mutate(){Symbol.for=value=>value;}',
+    'function mutate(){globalThis.Symbol={for:value=>value};}',
+  ];
+  const { rspackModuleFactories } = require("../../scripts/patches/lib/rspack-module-assets.js");
+  for (const prefix of prefixes) for (const warm of [false, true]) {
+    new (require("node:vm").Script)(prefix);
+    const fixture = assistantAppFixture(t);
+    if (warm) assert.equal(fixture.runAssistant().status, "applied");
+    const delegate = path.join(fixture.assets, "delegate.js"), original = fs.readFileSync(delegate, "utf8");
+    const source = prefix + original, before = fs.readFileSync(fixture.owner, "utf8");
+    assert.equal([...rspackModuleFactories(source)].find(copy => copy.moduleId === "Delegate").moduleSource,
+      [...rspackModuleFactories(original)].find(copy => copy.moduleId === "Delegate").moduleSource);
+    fs.writeFileSync(delegate, source);
+    let writes = 0;
+    const report = fixture.runAssistant({ writeFileSync(file, bytes) { writes++; fs.writeFileSync(file, bytes); } });
+    assert.equal(report.status, "skipped-optional", `${warm ? "warm" : "cold"}: ${prefix}`);
+    assert.equal(writes, 0, prefix);
+    assert.equal(fs.readFileSync(fixture.owner, "utf8"), before, prefix);
+    assert.equal(fs.readFileSync(delegate, "utf8"), source, prefix);
+  }
+});
+
+test("assistant full delegate chunk Symbol authority permits opaque data and unrelated nested local shadows", t => {
+  const prefixes = [
+    'const opaque="const Symbol={for:value=>value}; Symbol.for=value=>value;";',
+    'const opaque=/Symbol\\.for=value/;',
+    '/* Symbol.for=value=>value; Object.defineProperty(Symbol,"for",{}); */',
+    'function unrelated(Symbol){Symbol.for=value=>value;return Symbol.for;}',
+    'function unrelated(){const Symbol={for:value=>value};Symbol.for=value=>value;return Symbol;}',
+    'function unrelated(){let Symbol;Symbol={for:value=>value};return Symbol;}',
+    'function unrelated(Symbol){Object.defineProperty(Symbol,"for",{value:value=>value});}',
+    'function unrelated(globalThis){Reflect.set(globalThis,"Symbol",{for:value=>value});}',
+    String.raw`function unrelated(\u0053ymbol){\u0053ymbol["\x66or"]=value=>value;}`,
+    'const opaque={Symbol:{for:value=>value}};opaque.Symbol.for=value=>value;',
+  ];
+  for (const prefix of prefixes) {
+    const fixture = assistantAppFixture(t), delegate = path.join(fixture.assets, "delegate.js");
+    const source = prefix + fs.readFileSync(delegate, "utf8");
+    fs.writeFileSync(delegate, source);
+    assert.equal(fixture.runAssistant().status, "applied", prefix);
+    assert.equal(fixture.runAssistant().status, "already-applied", prefix);
+    assert.equal(fs.readFileSync(delegate, "utf8"), source, prefix);
+  }
+});

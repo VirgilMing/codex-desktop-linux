@@ -101,6 +101,11 @@ function loopBodyEnd(body, start) {
     const following = nextCode(body, end);
     return /^else\b/u.test(body.slice(following)) ? loopBodyEnd(body, nextCode(body, following + 4)) : end;
   }
+  const iteration = /^for(?:\s+await)?\s*\(/u.exec(body.slice(start));
+  if (iteration) {
+    const close = delimiterEnd(body, start + iteration[0].length - 1);
+    return close < start ? -1 : loopBodyEnd(body, nextCode(body, close + 1));
+  }
   // Native single-statement loops use expressions or an if/return branch.
   // Balance the entire expression so a function/object value cannot end it.
   const jump = /^(?:return|throw)\b/u.exec(body.slice(start));
@@ -195,6 +200,24 @@ function parameterProjection(body, name) {
       blank(start, start + name.length, name === "_" ? "$" : "_");
     }
   }
+  const objectMethods = new RegExp(`[{,]\\s*(?:async\\s+)?(${ID})\\s*\\(`, "gu");
+  for (const head of matches(body, objectMethods, false)) {
+    if (hidden(head.index) || ["if", "for", "while", "switch", "catch", "with", "function"].includes(head[1])) continue;
+    const scope = callableScope(body, head.index + head[0].length - 1);
+    if (!scope) continue;
+    if (head[1] === name) {
+      const keyStart = head.index + head[0].lastIndexOf(head[1]);
+      blank(keyStart, keyStart + name.length, name === "_" ? "$" : "_");
+    }
+    if (!contextBinding(body, scope.end, scope.end, name, probeName)) continue;
+    // Body declarations cannot shadow parameter default initializers. Keep
+    // those expressions unless a parameter itself owns this binding.
+    if (contextBinding(body, scope.open + 1, scope.end, name, probeName)) {
+      blank(scope.parametersOpen + 1, scope.parametersEnd);
+    }
+    blank(scope.open + 1, scope.end);
+    hiddenScopes.push([scope.open + 1, scope.end + 1]);
+  }
   const arrows = /(?:\(([^()]*)\)|([A-Za-z_$][\w$]*))\s*=>\s*/gu;
   for (const head of matches(body, arrows, false)) {
     if (hidden(head.index)) continue;
@@ -202,10 +225,14 @@ function parameterProjection(body, name) {
     const end = block ? findMatchingBrace(body, start) : arrowExpressionEnd(body, start);
     if (end < start) continue;
     const scope = block ? body.slice(start + 1, end) : `return (${body.slice(start, end)});`;
-    if (!localBinding(scope, head[1] ?? head[2], name)) continue;
+    const parameters = head[1] ?? head[2];
+    if (!localBinding(scope, parameters, name)) continue;
     const arrow = head.index + head[0].indexOf("=>");
-    if (head[1] == null) blank(head.index, arrow, name === "_" ? "$" : "_");
-    else blank(head.index + 1, head.index + head[0].lastIndexOf(")", head[0].indexOf("=>")));
+    // Body declarations do not bind parameter default initializers.
+    if (localBinding("", parameters, name)) {
+      if (head[1] == null) blank(head.index, arrow, name === "_" ? "$" : "_");
+      else blank(head.index + 1, head.index + head[0].lastIndexOf(")", head[0].indexOf("=>")));
+    }
     if (block) blank(start + 1, end);
     else blank(start, end, "0");
     hiddenScopes.push([head.index, end + Number(block)]);
@@ -224,7 +251,7 @@ function parameterProjection(body, name) {
   for (const open of matches(body, /\{/gu, false)) {
     if (hidden(open.index)) continue;
     const end = findMatchingBrace(body, open.index);
-    if (end > open.index && localBinding(body.slice(open.index + 1, end), "", name)) blank(open.index + 1, end);
+    if (end > open.index && contextBinding(body, end, end, name, probeName)) blank(open.index + 1, end);
   }
   return projected.join("");
 }

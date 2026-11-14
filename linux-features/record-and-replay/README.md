@@ -180,6 +180,104 @@ removes only its newly created file after command success, helper failure,
 argument conversion failure, or partial write failure. The runtime root is
 selected from `XDG_RUNTIME_DIR`, then `TMPDIR`, then `/tmp`.
 
+## Recording HUD
+
+The main window polls the existing recording status bridge and displays an
+active recording with two explicit controls. Finish stops the active recording
+and follows the existing done-message composer flow, including its send and
+Enter fallbacks. Discard asks for confirmation before canceling the active
+recording. Controls stay locked while their deferred action runs, including
+when the document body is replaced. Conversation navigation preserves the
+global recording.
+
+The HUD descriptor runs in `extracted-app:pre-webview` at order 153. It qualifies
+the main and detached HTML module edges together, including their callable
+require and export bindings, original bootstrap registry ranges, connected host
+decoder and receiver, imported namespace registrations, and native startup
+roles. Both entries receive one canonical HUD payload. The detached runtime
+returns before registering its DOM, listeners, timers, or transcript API.
+
+Repeated application checks the complete HUD payload and both native entry
+roles. Partial, duplicate, mixed, hidden, and orphan copies are rejected.
+Feature-private authority checks cover explicit owned-global destruction and
+nested writes to native bindings while allowing local shadows and inert data.
+The shared asset transaction includes the unchanged HTML and namespace import
+preimages, and fresh inventory and dependency checks precede forward writes.
+Rollback restoration failures remain fatal. A Read Aloud runtime keeps its
+original bytes and position in either append order.
+
+Active desktop snapshots use a five-second cadence and one in-flight operation
+covering status lookup and capture. Transcript normalization and deduplication
+retain session directory, action, and text ownership. The HUD pending queue is
+capped at 60 entries, the captured-key set retains 120, and retries drop entries
+older than ten minutes or with more than 24 prior attempts.
+
+Document teardown releases the HUD's owned DOM, style, listeners, timers,
+observer, and capture API. Deferred replies and composer waits retire with that
+document. Unrelated styles, listeners, and replacement APIs keep their owners.
+
+## Ordinary dictation transcripts
+
+The ordinary dictation descriptor runs in `extracted-app:pre-webview` at order
+20695. It qualifies the published composer hook, its stable CJS imports, native
+callback memo and stop/retry/file-insert consumers, ASR and cleanup ordering,
+current-signal checks, recording context, and history/recovery/send/insert paths.
+The capture contribution sits at the native nonempty-or-context completion
+boundary and preserves the surrounding native bytes.
+
+The direct HUD API and its bootstrap queue carry the same sanitized transcript
+and original action. The queue retains the existing `transcript`, `action`, and
+`queuedAt` fields. Capture stays unawaited. A local guard isolates synchronous
+capture failures and handles its returned Promise rejection, while native
+history, analytics, and submission retain their original error handling. The
+HUD owns active-session lookup, normalization, filtering, deduplication, and
+retry policy.
+
+Repeated application strips the exact owned contribution, requalifies the
+native producer and bindings, and reconstructs the complete supplied bytes.
+Wrong direct or fallback arguments, changed queue/timestamp policy, mixed or
+malformed copies, and orphan contributions are rejected before writes. The
+feature inventories every physical module copy and executable contribution,
+retains static import resources as unchanged transaction dependencies, and
+rechecks inventory and hashes around forward writes and warm validation.
+Verified rollback preserves the transaction's original bytes. Failed
+restoration remains fatal.
+
+## Global dictation recording context
+
+The global dictation descriptor runs in `extracted-app:pre-webview` at order
+20696. It qualifies the published Global Dictation page, its live component and
+normal stop/retry/server-stream finalization helpers, stable CJS namespaces,
+and the finalizer's ASR, stream recovery, two signal checks, cleanup, persistence,
+and analytics sequence. Selected body reads must resolve to those qualified
+functions and namespaces; local shadows are refused. Parameter/default
+initializer and unsupported header reads fail closed rather than extending
+the body-read proof to new scope forms.
+
+Only the normal completion branch adds a fire-and-forget
+`linux-record-replay-speech-context-active` request. Its additional transcript
+is trimmed, with `source` set to `codex-global-dictation`. The main bridge
+resolves the current active recording. The original completion retains its
+session ID, full text, branch, and following analytics for the native clipboard
+path. Recovery, empty, and cancellation paths keep their native behavior.
+
+The owned request has local synchronous-error and Promise-rejection isolation.
+Recording-disabled, status-error, and deferred recording work leave native
+completion unawaited. Native ASR, cleanup, persistence, completion, and logger
+errors retain their original handling.
+
+Canonical validation checks the complete request and its normal-only placement,
+strips its wrapper, requalifies the producer and bindings, and reconstructs the
+supplied bytes. Executable dispatch requests claim owned `url` or `source`
+fields using their complete static object-key and string-value meaning, including
+Unicode/hex escapes and computed literal keys. Static value checks also cover
+identity escapes and line continuations. Escapes are decoded once; dynamic
+computed keys, foreign values, and opaque string/comment data remain outside
+that static claim check. The physical module-copy cohort, static import
+dependencies, and fresh inventory/hash checks use the shared
+verified asset transaction and rollback behavior. Other native empty/cancel
+completion sites stay outside the capture seam.
+
 ```bash
 node --test linux-features/record-and-replay/test.js
 ```

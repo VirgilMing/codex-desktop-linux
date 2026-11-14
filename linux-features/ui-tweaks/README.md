@@ -262,6 +262,22 @@ the destination mode and the native content action then fills and focuses the
 composer. A card without the native auto-send flag fills and focuses without sending. The upstream
 account, draft, document and hint checks remain in place across preparation.
 
+The feature-sync patch additionally binds the rollout read, runtime status and
+IPC value to the same mounted native component and effect dependencies. It
+resolves imports through that Rspack factory's own loader and updates every
+physical copy of the module in one verified transaction. A gate in another
+scope, a changed binding, or a mixed/incomplete copy set leaves all copies
+unchanged.
+
+The content patch prefers generated suggestions only when the native page,
+project and runtime setting enable them and no explicit source override is
+selected. Otherwise it retains the original curated-source decision, including
+when Suggested Prompts is turned off after building. The native source policy,
+loading/read-settled rules, connected-app filtering and card-to-composer actions
+are reused. The source decision and its policy record must belong to the same
+content component; all copies of that module are validated and committed
+together.
+
 This tweak is independently disabled by default:
 
 ```json
@@ -416,10 +432,14 @@ the Quick Chat module, reaches the ChatGPT sender, model, status, and submission
 lock modules through that module's own require function, and publishes itself
 under `Symbol.for("codex-linux.selected-text-more-details")` when the module
 evaluates. The selection overlay reads that registry; until it exists, the menu
-keeps its upstream actions without More details. rspack duplicates the overlay
-module into several lazy chunks, and every copy is patched. All inserted code
+keeps its upstream actions without More details. Rspack can put the overlay and
+toolbar modules in separate lazy chunks. The patch validates the native toolbar
+exports and patches every discovered overlay copy. All inserted code
 is wrapped in marker comments, so an already patched asset is verified by
-restoring the upstream bytes and re-applying the patch.
+restoring the upstream bytes and re-applying the patch. The runtime and overlay
+assets are committed together with byte verification. A failed write restores
+their original bytes; if restoration cannot be verified, the build stops with
+an integrity failure.
 
 | Log stage or timing type | What it measures |
 | --- | --- |

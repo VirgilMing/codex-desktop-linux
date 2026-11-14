@@ -9,6 +9,7 @@ const {
 const {
   findMainProcessChunks,
   listWebviewScriptAssets,
+  patchWebviewAssets,
 } = require("../../scripts/patches/lib/assets.js");
 
 const CODEX_MICRO_GATE_ID = "3207467860";
@@ -42,8 +43,7 @@ const CODEX_MICRO_GATE_CONTRACTS = [
     routeCount: 0,
     anchor: (source) =>
       source.includes("onDictationTranscriptInsert")
-      && source.includes("isDictationEnabled:")
-      && !source.includes('surface:"composer"'),
+      && source.includes("onCodexMicroStop:"),
   },
   {
     description: "Codex Micro composer gate",
@@ -214,7 +214,7 @@ function findCodexMicroFeatureGateAssets(extractedDir) {
   return { matches, reason: null };
 }
 
-function patchCodexMicroFeatureGateAssets(extractedDir) {
+function patchCodexMicroFeatureGateAssets(extractedDir, options = {}) {
   const discovery = findCodexMicroFeatureGateAssets(extractedDir);
   if (discovery.matches == null) {
     console.warn(
@@ -223,21 +223,25 @@ function patchCodexMicroFeatureGateAssets(extractedDir) {
     return { matched: 0, changed: 0, reason: discovery.reason };
   }
 
-  const pendingWrites = discovery.matches
+  const edits = discovery.matches
     .map((match) => ({
-      ...match,
+      assetName: match.assetName,
+      source: match.source,
       patchedSource: applyCodexMicroFeatureGatePatch(
         match.source,
         match.expected,
       ),
-    }))
-    .filter(({ source, patchedSource }) => source !== patchedSource);
-  for (const { assetPath, patchedSource } of pendingWrites) {
-    fs.writeFileSync(assetPath, patchedSource, "utf8");
+    }));
+  const result = patchWebviewAssets(
+    path.join(extractedDir, "webview", "assets"), edits, options,
+  );
+  const expectedChanges = edits.filter(({ source, patchedSource }) => source !== patchedSource).length;
+  if (result.changed !== expectedChanges) {
+    throw new Error("Codex Micro feature-gate transaction did not commit every prepared change");
   }
   return {
     matched: 1,
-    changed: pendingWrites.length,
+    changed: result.changed,
     reason: null,
     targets: discovery.matches.map(({ assetName }) => assetName),
   };

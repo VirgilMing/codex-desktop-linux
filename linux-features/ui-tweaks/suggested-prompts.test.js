@@ -5,6 +5,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+require("./suggested-prompts-feature-sync.test.js");
+require("./suggested-prompts-content.test.js");
 
 const {
   APP_PAGE_ELIGIBILITY_MARKER,
@@ -54,8 +56,12 @@ function appPageFixture() {
 
 function featureSyncFixture() {
   return [
-    'function sync(){let u=(0,ed.Zj)("2425897452"),m=(0,ed.Zj)("2716206584");',
-    't0.O1.dispatchMessage("electron-desktop-features-changed",{ambientSuggestions:u&&"enabled"===m.status,appshotsEnabled:m})}',
+    'export const __webpack_modules__={FeatureSync(e,t,n){var ed=n("gates"),React=n("react"),t0=n("bus"),',
+    'store=n("store"),availability=n("availability"),jsx=n("jsx");',
+    'function sync(){let u=(0,ed.Zj)("2425897452"),m=(0,store.Ul)(availability.state);',
+    'return(0,React.useEffect)(()=>{t0.O1.dispatchMessage("electron-desktop-features-changed",',
+    '{ambientSuggestions:u&&"enabled"===m.status,appshotsEnabled:!0})},[u,m.status]),null}',
+    'function mount(){return(0,jsx.jsx)(sync,{})}n.d(t,{render:()=>mount})}};',
   ].join("");
 }
 
@@ -74,16 +80,7 @@ function mainFixture() {
 }
 
 function homeContentFixture() {
-  return [
-    "function ua({generatedSuggestionsEnabled:i,projectRoot:l}){",
-    "let Ee=!0===(0,d.iK)(b.enabled),De=(0,a.Ul)(jn),Me=i&&null!=l,",
-    "Ne=null==De&&Me&&Ee,{data:Pe,isLoading:Fe}=(0,rr.a)({enabled:Ne}),",
-    "ze=Ne&&(Fe||Le&&P)?null:(0,tf.o1)({debugOverride:De,experimentEligible:Le,personalized:Re});",
-    'let z="curated"===ze;e[48]!==ye.email?(Be=(0,G.rm)(ye.email),e[48]=ye.email,e[49]=Be):Be=e[49];',
-    "let Xe=Be,Ve=(0,tf.b4)({canUsePersonalizedSuggestions:Ee,",
-    "generatedSuggestionsEnabled:Me,hasGeneratedSuggestionsReadSettled:x,",
-    "shouldUseCuratedNewChatPageSuggestions:z});return Ve}",
-  ].join("");
+  return require("./fixtures/suggested-prompts-content.js");
 }
 
 function featureContext({ defaultEnabled = false, override } = {}) {
@@ -248,14 +245,13 @@ test("main patch rejects incomplete, duplicate, and mixed contracts byte-identic
   }
 });
 
-test("Home content renders generated suggestions instead of selecting curated cards", () => {
+test("Home content prefers generated suggestions only in the native enabled context", () => {
   const source = homeContentFixture();
   const patched = applySuggestedPromptsHomeContentPatch(source);
 
   assert.notEqual(patched, source);
   assert.equal((patched.match(new RegExp(HOME_CONTENT_SOURCE_MARKER, "g")) || []).length, 1);
-  assert.match(patched, /z=\("curated"===ze,function codexLinuxSuggestedPromptsGeneratedSource/);
-  assert.match(patched, /function codexLinuxSuggestedPromptsGeneratedSource\(\)\{return!1\}/);
+  assert.match(patched, /z="curated"===ze&&!Ne\/\*codexLinuxSuggestedPromptsGeneratedSource\*\//);
   assert.equal(applySuggestedPromptsHomeContentPatch(patched), patched);
 });
 
@@ -268,8 +264,8 @@ test("Home content rejects incomplete, duplicate, and mixed contracts byte-ident
       "shouldUseCuratedNewChatPageSuggestions:other",
     ),
     patched.replace(
-      `function ${HOME_CONTENT_SOURCE_MARKER}(){return!1}`,
-      `function ${HOME_CONTENT_SOURCE_MARKER}(){return!0}`,
+      `&&!Ne/*${HOME_CONTENT_SOURCE_MARKER}*/`,
+      `&&Ne/*${HOME_CONTENT_SOURCE_MARKER}*/`,
     ),
     patched.replace(
       "shouldUseCuratedNewChatPageSuggestions:z",
